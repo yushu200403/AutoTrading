@@ -9,8 +9,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <!-- Chart.js for equity curve -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+    <!-- Chart.js v4.5.0 随仓库分发，避免外部 CDN 带来的供应链与可用性风险 -->
+    <script src="{{ url_for('static', filename='js/vendor/chart.umd.min.js') }}"></script>
 </head>
 
 <body>

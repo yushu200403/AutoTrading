@@ -3,6 +3,9 @@
 {% block title %}OPENNOF1 - 全自动货币交易系统{% endblock %}
 
 {% block content %}
+<div class="auth-banner" id="auth-banner" hidden>
+    需要登录后才能查看账户与策略数据，请在右侧「设置」面板输入控制台密码。
+</div>
 <div class="dashboard-grid">
 
     <!-- 左侧区域: 币种价格 + 图表 + 账户总览 -->
@@ -222,7 +225,7 @@
         <div class="modal-container">
             <div class="modal-header">
                 <div class="modal-title" id="modal-title">提示</div>
-                <button class="modal-close" onclick="closeModal()">×</button>
+                <button class="modal-close" id="modal-close-btn">×</button>
             </div>
             <div class="modal-body" id="modal-message"></div>
             <div class="modal-footer">

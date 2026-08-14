@@ -1,5 +1,5 @@
 /**
- * OpenNOF1 Frontend Logic
+ * OpenNOF1 前端逻辑
  */
 
 const API_BASE = '/api';
@@ -51,7 +51,7 @@ function applyColorModeToCharts() {
     }
 }
 
-// State
+// 页面状态
 let equityChart = null;
 let miniCharts = {};
 
@@ -59,8 +59,8 @@ let miniCharts = {};
 function formatTimeWithTZ(isoString, options = {}) {
     if (!isoString) return '';
     
-    // 如果是 Naive 时间 (无 Z 无 +8:00)，手动加 Z 视为 UTC
-    if (isoString.indexOf('Z') === -1 && isoString.indexOf('+') === -1 && (isoString.match(/-/g) || []).length >= 2) {
+    // 如果是不带时区的时间（无 Z 或 +8:00），补 Z 后按 UTC 解释
+    if (!/([zZ]|[+-]\d{2}:\d{2})$/.test(isoString)) {
         isoString += 'Z';
     }
 
@@ -101,7 +101,7 @@ function getLocalGroupKey(isoString) {
     return `${year}-${month}-${day}T${hour}:${minute}`;
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initTabs();
 
     applyColorModeToCSS(getColorMode());
@@ -109,38 +109,57 @@ document.addEventListener('DOMContentLoaded', () => {
     initEquityChart();
     initMiniCharts();
 
-    updateStatus();
-    updateAccountSummary();
-    updateEquityChart();
-    updateTickers();
-    fetchDecisions();
-    fetchPositions();
-    fetchMemory();
-    fetchRecords();
-    fetchInstructions();
-
     setupEventListeners();
 
-    setInterval(() => {
-        updateStatus();
-        updateAccountSummary();
-        updateTickers();
-        fetchPositions();
-    }, REFRESH_INTERVAL);
+    await Promise.allSettled([
+        updateStatus(),
+        updateAccountSummary(),
+        updateEquityChart(),
+        updateTickers(),
+        fetchDecisions(),
+        fetchPositions(),
+        fetchMemory(),
+        fetchRecords(),
+        fetchInstructions()
+    ]);
 
-    setInterval(() => {
-        fetchDecisions();
-        updateEquityChart();
-        fetchRecords();
-    }, 15000);
+    schedulePolling(() => Promise.allSettled([
+        updateStatus(),
+        updateAccountSummary(),
+        updateTickers(),
+        fetchPositions()
+    ]), REFRESH_INTERVAL);
+
+    schedulePolling(() => Promise.allSettled([
+        fetchDecisions(),
+        updateEquityChart(),
+        fetchRecords()
+    ]), 15000);
 });
 
-// --- Tab System ---
+function schedulePolling(task, interval) {
+    const run = async () => {
+        try {
+            await task();
+        } finally {
+            window.setTimeout(run, interval);
+        }
+    };
+    window.setTimeout(run, interval);
+}
 
-const SETTINGS_AUTH_KEY = 'opennof1_settings_auth';
+// --- 标签页系统 ---
+
+const CSRF_TOKEN_KEY = 'opennof1_csrf_token';
 
 function isSettingsAuthenticated() {
-    return localStorage.getItem(SETTINGS_AUTH_KEY) === 'true';
+    return Boolean(sessionStorage.getItem(CSRF_TOKEN_KEY));
+}
+
+// 只读接口默认也要求认证，未认证时给出明确提示而非空面板
+function setAuthBannerVisible(visible) {
+    const banner = document.getElementById('auth-banner');
+    if (banner) banner.hidden = !visible;
 }
 
 // 更新设置标签的显示状态
@@ -165,8 +184,10 @@ async function verifySettingsPassword() {
     });
     
     if (result?.success) {
-        localStorage.setItem(SETTINGS_AUTH_KEY, 'true');
+        sessionStorage.setItem(CSRF_TOKEN_KEY, result.csrf_token);
         updateSettingsAuthState();
+        fetchInstructions();
+        fetchMemory();
     } else {
         if (error) error.style.display = 'block';
         if (input) input.value = '';
@@ -178,11 +199,11 @@ function initTabs() {
         btn.addEventListener('click', () => {
             const tabId = btn.dataset.tab;
 
-            // Update buttons
+            // 更新按钮
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
 
-            // Update content
+            // 更新内容
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             const target = document.getElementById(`tab-${tabId}`);
             if (target) target.classList.add('active');
@@ -210,7 +231,7 @@ function initTabs() {
     updateSettingsAuthState();
 }
 
-// --- Mini Charts (币种 24h 走势) ---
+// --- 币种 24 小时迷你走势 ---
 
 function initMiniCharts() {
     SYMBOLS.forEach(symbol => {
@@ -273,7 +294,7 @@ async function updateTickers() {
             changeEl.className = `ticker-change ${change >= 0 ? 'positive' : 'negative'}`;
         }
         
-        // Update mini chart color based on 24h change
+        // 根据 24 小时涨跌更新迷你图颜色
         const chart = miniCharts[symbol];
         if (chart && ticker.change_24h !== undefined) {
             const changeValue = parseFloat(ticker.change_24h) || 0;
@@ -285,7 +306,7 @@ async function updateTickers() {
             chart.update('none');
         }
         
-        // Update mini chart data (from sparkline if available)
+        // 使用接口返回的迷你走势更新图表数据
         if (ticker.sparkline && chart) {
             chart.data.labels = ticker.sparkline.map((_, i) => i);
             chart.data.datasets[0].data = ticker.sparkline;
@@ -294,7 +315,7 @@ async function updateTickers() {
     });
 }
 
-// --- Chart ---
+// --- 净值图表 ---
 
 function initEquityChart() {
     const ctx = document.getElementById('equityChart');
@@ -370,8 +391,7 @@ function initEquityChart() {
 }
 
 async function updateEquityChart() {
-    // 不传 limit 参数表示获取所有历史数据
-    const data = await fetchAPI('/equity-history');
+    const data = await fetchAPI('/equity-history?limit=1000');
     if (!data || !data.data || !equityChart) return;
 
     const labels = data.data.map(d => {
@@ -406,13 +426,13 @@ async function updateEquityChart() {
     equityChart.update('none');
 }
 
-// --- Account Summary ---
+// --- 账户总览 ---
 
 async function updateAccountSummary() {
     const data = await fetchAPI('/account-summary');
     if (!data) return;
 
-    // Total value display
+    // 总净值显示
     const totalEl = document.getElementById('total-value');
     const changeEl = document.getElementById('total-change');
     if (totalEl) totalEl.textContent = `$${formatNumber(data.total_equity)}`;
@@ -422,7 +442,7 @@ async function updateAccountSummary() {
         changeEl.className = `change ${pct >= 0 ? 'positive' : 'negative'}`;
     }
 
-    // Stats
+    // 统计指标
     updateStat('stat-total', data.total_equity);
     // 活动资产 = 已占用保证金 (total - free)
     const usedMargin = data.total_equity - data.free_balance;
@@ -457,24 +477,45 @@ function updateStat(id, value, showSign = false) {
 }
 
 function formatNumber(num) {
-    if (num === undefined || num === null) return '0.00';
-    return parseFloat(num).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return toFiniteNumber(num).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-// --- API ---
+function toFiniteNumber(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+}
+
+// --- 接口请求 ---
 
 async function fetchAPI(endpoint, options = {}) {
     try {
-        const response = await fetch(`${API_BASE}${endpoint}`, options);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return await response.json();
+        const requestOptions = { ...options, credentials: 'same-origin' };
+        const method = (requestOptions.method || 'GET').toUpperCase();
+        const headers = new Headers(requestOptions.headers || {});
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+            const csrfToken = sessionStorage.getItem(CSRF_TOKEN_KEY);
+            if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+        }
+        requestOptions.headers = headers;
+        const response = await fetch(`${API_BASE}${endpoint}`, requestOptions);
+        const data = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                sessionStorage.removeItem(CSRF_TOKEN_KEY);
+                updateSettingsAuthState();
+                setAuthBannerVisible(true);
+            }
+            return { ...data, http_status: response.status };
+        }
+        setAuthBannerVisible(false);
+        return data;
     } catch (error) {
-        console.error(`API Error (${endpoint}):`, error);
+        console.error(`接口请求失败 (${endpoint}):`, error);
         return null;
     }
 }
 
-// --- Status ---
+// --- 服务状态 ---
 
 async function updateStatus() {
     const data = await fetchAPI('/status');
@@ -508,7 +549,7 @@ async function updateStatus() {
     if (liveToggle) liveToggle.checked = data.live_trading || false;
 }
 
-// --- Decisions ---
+// --- 模型决策 ---
 // 已显示的决策组键集合 (用于增量更新)
 let displayedGroupKeys = new Set();
 
@@ -545,7 +586,7 @@ async function fetchDecisions() {
                 tools: []
             };
         }
-        // 如果当前决策有更长的 reasoning，使用它
+        // 如果当前决策有更长的分析文本，使用它
         if (d.reasoning && d.reasoning.length > groups[ts].reasoning.length) {
             groups[ts].reasoning = d.reasoning;
         }
@@ -643,9 +684,9 @@ function renderDecisionGroup(group) {
         
         toolsHtml += `
             <div class="tool-card ${actionClass}">
-                <div class="tool-card-header" onclick="toggleToolArgs('${uniqueId}')">
-                    <span class="tool-badge">${displayName}</span>
-                    <span class="tool-info">${d.info || '无描述'}</span>
+                <div class="tool-card-header" data-tool-toggle="${escapeHtml(uniqueId)}">
+                    <span class="tool-badge">${escapeHtml(displayName)}</span>
+                    <span class="tool-info">${escapeHtml(d.info || '无描述')}</span>
                     ${statusHtml}
                     <span class="tool-toggle" id="toggle-${uniqueId}">▼</span>
                 </div>
@@ -655,9 +696,9 @@ function renderDecisionGroup(group) {
     });
 
     return `
-        <div class="decision-group" data-group-key="${group.key}">
+        <div class="decision-group" data-group-key="${escapeHtml(group.key)}">
             <div class="decision-header">
-                <span class="decision-time">${time}</span>
+                <span class="decision-time">${escapeHtml(time)}</span>
             </div>
             ${reasoningHtml}
             <div class="tool-cards">
@@ -665,6 +706,14 @@ function renderDecisionGroup(group) {
             </div>
         </div>
     `;
+}
+
+// 用事件委托替代内联 onclick，以便启用不含 unsafe-inline 的 CSP
+function initToolArgsToggle() {
+    document.addEventListener('click', (event) => {
+        const header = event.target.closest('[data-tool-toggle]');
+        if (header) toggleToolArgs(header.dataset.toolToggle);
+    });
 }
 
 // 展开/折叠工具参数
@@ -701,29 +750,33 @@ function toggleMcpDetails(idx) {
     }
 }
 
-// --- Positions ---
+// --- 当前持仓 ---
 
 async function fetchPositions() {
     const data = await fetchAPI('/positions');
     const tbody = document.getElementById('positions-table-body');
     if (!tbody) return;
 
-    if (!data || data.length === 0) {
+    if (!Array.isArray(data) || data.length === 0) {
         tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">当前无持仓</td></tr>';
         return;
     }
 
     let html = '';
     data.forEach(pos => {
-        const pnlClass = pos.unrealized_pnl >= 0 ? 'positive' : 'negative';
+        const pnl = toFiniteNumber(pos.unrealized_pnl);
+        const percentage = toFiniteNumber(pos.percentage);
+        const contracts = toFiniteNumber(pos.contracts);
+        const leverage = toFiniteNumber(pos.leverage, 1);
+        const pnlClass = pnl >= 0 ? 'positive' : 'negative';
         const sideLabel = pos.side === 'LONG' ? '做多' : '做空';
         html += `
             <tr>
-                <td>${pos.symbol.replace('/USDT', '')}</td>
+                <td>${escapeHtml(String(pos.symbol || '').replace('/USDT', ''))}</td>
                 <td><span class="badge ${pos.side === 'LONG' ? 'badge-success' : 'badge-danger'}">${sideLabel}</span></td>
-                <td>${pos.leverage || 1}x</td>
-                <td>${parseFloat(pos.contracts).toFixed(4)}</td>
-                <td class="${pnlClass}">$${parseFloat(pos.unrealized_pnl).toFixed(2)}<br><small>${parseFloat(pos.percentage).toFixed(2)}%</small></td>
+                <td>${leverage}x</td>
+                <td>${contracts.toFixed(4)}</td>
+                <td class="${pnlClass}">$${pnl.toFixed(2)}<br><small>${percentage.toFixed(2)}%</small></td>
             </tr>
         `;
     });
@@ -731,7 +784,7 @@ async function fetchPositions() {
     tbody.innerHTML = html;
 }
 
-// --- Memory ---
+// --- 记忆白板 ---
 
 async function fetchMemory() {
     const data = await fetchAPI('/memory');
@@ -739,18 +792,19 @@ async function fetchMemory() {
     if (!el) return;
 
     if (data && data.content) {
-        el.innerHTML = `<pre style="white-space: pre-wrap; margin: 0;">${data.content}</pre>`;
+        el.innerHTML = `<pre style="white-space: pre-wrap; margin: 0;">${escapeHtml(data.content)}</pre>`;
     } else {
         el.innerHTML = '<span class="text-muted">暂无记忆内容</span>';
     }
 }
 
-// --- Event Listeners ---
-
-// --- Event Listeners ---
+// --- 事件监听 ---
 
 function setupEventListeners() {
-    // Start button
+    initToolArgsToggle();
+    document.getElementById('modal-close-btn')?.addEventListener('click', closeModal);
+
+    // 启动按钮
     document.getElementById('btn-start')?.addEventListener('click', async () => {
         const result = await fetchAPI('/start', { method: 'POST' });
         if (result?.success) {
@@ -760,7 +814,7 @@ function setupEventListeners() {
         }
     });
 
-    // Stop button
+    // 停止按钮
     document.getElementById('btn-stop')?.addEventListener('click', async () => {
         const result = await fetchAPI('/stop', { method: 'POST' });
         if (result?.success) {
@@ -770,7 +824,7 @@ function setupEventListeners() {
         }
     });
 
-    // Run once button
+    // 单次运行按钮
     document.getElementById('btn-run-once')?.addEventListener('click', async (e) => {
         const btn = e.target;
         const originalText = btn.textContent;
@@ -792,7 +846,7 @@ function setupEventListeners() {
         }
     });
 
-    // Close all positions button - 两阶段确认
+    // 一键全平按钮采用两阶段确认
     let closeAllStage = 0; // 0: 初始, 1: 等待确认
     let closeAllTimer = null;
     
@@ -839,12 +893,16 @@ function setupEventListeners() {
                 const result = await fetchAPI('/close-all', { method: 'POST' });
                 
                 if (result?.success) {
-                    const msg = `${result.message}<br><br>已平仓: ${result.results.closed.length} 个<br>已撤单: ${result.results.cancelled.length} 个`;
+                    const closedCount = Array.isArray(result.results?.closed) ? result.results.closed.length : 0;
+                    const cancelledCount = Array.isArray(result.results?.cancelled) ? result.results.cancelled.length : 0;
+                    const msg = `${result.message || '操作已完成'}\n\n已平仓: ${closedCount} 个\n已撤单: ${cancelledCount} 个`;
                     showModal('操作完成', msg);
                 } else {
-                    let msg = `平仓完成，但有错误：<br>${result?.message || '未知错误'}`;
+                    let msg = `平仓完成，但有错误：\n${result?.message || '未知错误'}`;
                     if (result?.results?.errors?.length > 0) {
-                        msg += '<br><br>错误详情：<br>' + result.results.errors.join('<br>');
+                        msg += '\n\n错误详情：\n' + result.results.errors
+                            .map(error => typeof error === 'string' ? error : JSON.stringify(error))
+                            .join('\n');
                     }
                     showModal('操作结果', msg);
                 }
@@ -868,36 +926,44 @@ function setupEventListeners() {
         btn.disabled = false;
     }
 
-    // Live trading toggle
+    // 实盘交易开关
     document.getElementById('live-trading')?.addEventListener('change', async (e) => {
         const enable = e.target.checked;
         
         if (enable) {
-            // Revert state immediately for confirmation
+            // 先恢复关闭状态，等待用户确认
             e.target.checked = false;
             
-            showModal('风险警告', '⚠️ 确定启用实盘交易？<br>系统将使用您的账户资金执行真实订单！', {
+            showModal('风险警告', '⚠️ 确定启用实盘交易？\n系统将使用您的账户资金执行真实订单！', {
                 type: 'confirm',
                 onConfirm: async () => {
-                    // Update UI state manually
+                    // 手动更新界面状态
                     e.target.checked = true;
                     closeModal();
                     
-                    // Call API
-                    await fetchAPI('/live', {
+                    // 调用控制接口
+                    const result = await fetchAPI('/live', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ enable: true })
                     });
+                    if (!result?.success) {
+                        e.target.checked = false;
+                        showModal('切换失败', result?.error || '无法启用实盘交易');
+                    }
                 }
             });
         } else {
-            // Disable immediately without confirmation
-            await fetchAPI('/live', {
+            // 关闭实盘无需二次确认，但失败时恢复开关状态
+            const result = await fetchAPI('/live', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enable: false })
             });
+            if (!result?.success) {
+                e.target.checked = true;
+                showModal('切换失败', result?.error || '无法关闭实盘交易');
+            }
         }
     });
 
@@ -910,7 +976,7 @@ function setupEventListeners() {
         });
     }
 
-    // Save instructions
+    // 保存自定义指令
     document.getElementById('btn-save-instructions')?.addEventListener('click', async () => {
         const instructions = document.getElementById('custom-instructions')?.value || '';
         const result = await fetchAPI('/instructions', {
@@ -920,11 +986,13 @@ function setupEventListeners() {
         });
         if (result?.success) {
             showModal('提示', '指令已保存');
+        } else {
+            showModal('保存失败', result?.error || '无法保存指令');
         }
     });
 }
 
-// --- Modal System ---
+// --- 模态框系统 ---
 
 function showModal(title, message, options = {}) {
     const modal = document.getElementById('custom-modal');
@@ -936,16 +1004,17 @@ function showModal(title, message, options = {}) {
     if (!modal || !titleEl || !msgEl || !confirmBtn || !cancelBtn) return;
 
     titleEl.textContent = title || '提示';
-    msgEl.innerHTML = message || ''; // Allow HTML in message
+    msgEl.textContent = message || '';
+    msgEl.style.whiteSpace = 'pre-line';
 
-    // Config buttons
+    // 配置按钮类型
     const type = options.type || 'alert';
     
-    // Reset buttons
+    // 重置按钮
     cancelBtn.style.display = type === 'confirm' ? 'inline-block' : 'none';
     cancelBtn.onclick = () => closeModal();
 
-    // Confirm button logic
+    // 确认按钮逻辑
     confirmBtn.onclick = () => {
         if (options.onConfirm) {
             options.onConfirm();
@@ -954,7 +1023,7 @@ function showModal(title, message, options = {}) {
         }
     };
 
-    // Show modal
+    // 显示模态框
     modal.style.display = 'flex';
 }
 
@@ -963,7 +1032,7 @@ function closeModal() {
     if (modal) modal.style.display = 'none';
 }
 
-// --- Records Timeline ---
+// --- 交易记录时间轴 ---
 
 // 工具名称汉化映射
 const TOOL_NAMES_TIMELINE = {
@@ -981,7 +1050,7 @@ async function fetchRecords() {
     const container = document.getElementById('records-timeline');
     if (!container) return;
     
-    const data = await fetchAPI('/records');
+    const data = await fetchAPI('/records?limit=200');
     
     if (!data || !Array.isArray(data) || data.length === 0) {
         container.innerHTML = '<div class="timeline-empty">暂无交易记录</div>';
@@ -1003,7 +1072,7 @@ async function fetchRecords() {
     
     sorted.forEach(record => {
         const time = formatTimeWithTZ(record.timestamp);
-        const toolName = TOOL_NAMES_TIMELINE[record.tool_name] || record.tool_name?.toUpperCase() || '未知';
+        const toolName = TOOL_NAMES_TIMELINE[record.tool_name] || String(record.tool_name || '未知').toUpperCase();
         const info = record.info || '无描述';
         const status = record.status === 'SUCCESS' ? 'success' : 
                       record.status === 'FAILED' ? 'failed' : '';
@@ -1018,9 +1087,9 @@ async function fetchRecords() {
         html += `
             <div class="timeline-item ${actionClass}">
                 <div class="timeline-content">
-                    <div class="timeline-time">${time}</div>
+                    <div class="timeline-time">${escapeHtml(time)}</div>
                     <div>
-                        <span class="timeline-tool">${toolName}</span>
+                        <span class="timeline-tool">${escapeHtml(toolName)}</span>
                         ${statusText ? `<span class="timeline-status ${status}">${statusText}</span>` : ''}
                     </div>
                     <div class="timeline-info">${escapeHtml(info)}</div>
@@ -1033,7 +1102,7 @@ async function fetchRecords() {
     container.innerHTML = html;
 }
 
-// --- Instructions ---
+// --- 自定义指令 ---
 
 async function fetchInstructions() {
     const textarea = document.getElementById('custom-instructions');

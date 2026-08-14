@@ -1,29 +1,22 @@
 """
-宏观数据源模块。
+宏观指标表述模块。
 
-获取外部数据：市场宽度等宏观指标。
+把已采集的宏观指标（市场宽度等）转写为提示词可读的摘要。
+数据采集由行情客户端负责，本模块不发起网络请求。
 """
 
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
 
 class MacroDataClient:
     """
-    用于获取宏观市场数据的客户端。
+    宏观市场指标的表述器。
     
-    提供市场宽度等宏观分析指标。
+    将市场宽度等指标转为自然语言判断，供模型解读。
     """
-    
-    def __init__(self, timeout: int = 10):
-        """
-        初始化宏观数据客户端。
-        
-        Args:
-            timeout: 请求超时时间（秒）
-        """
-        self.timeout = timeout
     
     def format_macro_summary(self, advance_decline_ratio: float) -> str:
         """
@@ -35,6 +28,9 @@ class MacroDataClient:
         Returns:
             格式化的摘要字符串
         """
+        if advance_decline_ratio is None or not math.isfinite(advance_decline_ratio):
+            return "全球市场上下文:\n- 市场宽度 (A/D 比率): 不可用 - 禁止据此判断方向"
+
         # 格式化 A/D 比率
         if advance_decline_ratio > 1.5:
             ad_assessment = "强劲 (广泛反弹)"
@@ -45,7 +41,7 @@ class MacroDataClient:
         else:
             ad_assessment = "非常疲软 (市场低迷)"
         
-        # 处理 float('inf') 情况
+        # 极端值统一收敛显示，避免刷屏
         if advance_decline_ratio >= 9999:
             ad_display = "9999+"
         else:

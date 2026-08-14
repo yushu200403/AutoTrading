@@ -7,13 +7,33 @@
 import pandas as pd
 import numpy as np
 import logging
-from datetime import datetime
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 from app.bot.exceptions import InsufficientDataError
 from app.bot.tz_utils import from_timestamp, format_time
 
 logger = logging.getLogger(__name__)
+
+
+def format_price(value: float) -> str:
+    """按数量级选择小数位，避免低价币被格式化成 0.00。
+
+    Args:
+        value: 价格
+
+    Returns:
+        千位分隔的价格字符串
+    """
+    magnitude = abs(value)
+    if magnitude >= 100:
+        decimals = 2
+    elif magnitude >= 1:
+        decimals = 4
+    elif magnitude >= 0.01:
+        decimals = 6
+    else:
+        decimals = 8
+    return f"{value:,.{decimals}f}"
 
 
 def calc_sma(data: List[float], period: int) -> List[Optional[float]]:
@@ -27,6 +47,8 @@ def calc_sma(data: List[float], period: int) -> List[Optional[float]]:
     Returns:
         SMA 值列表，前 period-1 个位置为 None
     """
+    if period <= 0:
+        raise ValueError("移动平均周期必须大于 0")
     if len(data) < period:
         return [None] * len(data)
     result = [None] * (period - 1)
@@ -84,9 +106,9 @@ class IndicatorSummary:
     trend: TrendData
     bollinger: BollingerBandsData
     atr: float
-    atr_percent: float  # ATR as % of price
+    atr_percent: float  # ATR 占价格的百分比
     rsi: float
-    rsi_condition: str  # "OVERBOUGHT", "OVERSOLD", "NEUTRAL"
+    rsi_condition: str  # RSI 状态枚举
     divergence: DivergenceData
     support_resistance: SupportResistanceData
 
@@ -101,10 +123,28 @@ def create_dataframe(ohlcv_data: List[List]) -> pd.DataFrame:
     Returns:
         具有正确列名和 datetime 索引的 DataFrame
     """
+    if not ohlcv_data:
+        raise ValueError("OHLCV 数据为空")
+    if any(len(candle) < 6 for candle in ohlcv_data):
+        raise ValueError("OHLCV 数据列不完整")
     df = pd.DataFrame(
         ohlcv_data,
         columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
     )
+    for column in ['timestamp', 'open', 'high', 'low', 'close', 'volume']:
+        df[column] = pd.to_numeric(df[column], errors='raise')
+    if not np.isfinite(
+        df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].to_numpy()
+    ).all():
+        raise ValueError("OHLCV 包含非有限数值")
+    if (df['timestamp'] < 0).any():
+        raise ValueError("OHLCV 时间戳不能为负数")
+    if (df[['open', 'high', 'low', 'close']] <= 0).any().any() or (df['volume'] < 0).any():
+        raise ValueError("OHLCV 包含非法价格或成交量")
+    if ((df['high'] < df[['open', 'close', 'low']].max(axis=1)) |
+            (df['low'] > df[['open', 'close', 'high']].min(axis=1))).any():
+        raise ValueError("OHLCV 高低价关系非法")
+    df = df.drop_duplicates('timestamp', keep='last').sort_values('timestamp')
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)
     return df
@@ -153,15 +193,16 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     loss = (-delta).where(delta < 0, 0.0)
     
     # Wilder 平滑法 (等同于 alpha=1/period 的 EMA)
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period).mean()
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     
-    # 避免除以零：当 avg_loss 为 0 时，RSI = 100
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    
-    # 当 avg_loss 为 0 时，RSI 应为 100 (纯收益)
-    rsi = rsi.fillna(100)
+
+    warmed_up = avg_gain.notna() & avg_loss.notna()
+    rsi = rsi.mask(warmed_up & (avg_loss == 0) & (avg_gain > 0), 100)
+    rsi = rsi.mask(warmed_up & (avg_gain == 0) & (avg_loss > 0), 0)
+    rsi = rsi.mask(warmed_up & (avg_gain == 0) & (avg_loss == 0), 50)
     
     return rsi
 
@@ -212,7 +253,9 @@ def _vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) 
     return vwap
 
 
-def calculate_emas(df: pd.DataFrame, periods: List[int] = [20, 50, 200]) -> TrendData:
+def calculate_emas(
+    df: pd.DataFrame, periods: Optional[List[int]] = None
+) -> TrendData:
     """
     计算 EMA 并确定趋势方向。
     
@@ -223,6 +266,7 @@ def calculate_emas(df: pd.DataFrame, periods: List[int] = [20, 50, 200]) -> Tren
     Returns:
         TrendData 包含 EMA 和趋势评估
     """
+    periods = periods or [20, 50, 200]
     current_price = df['close'].iloc[-1]
     
     ema_values = {}
@@ -475,40 +519,33 @@ def detect_divergence(df: pd.DataFrame, lookback: int = 14) -> DivergenceData:
     # 获取近期价格和 RSI 数据
     recent_close = df['close'].iloc[-lookback:]
     recent_rsi = rsi_series.iloc[-lookback:]
-    
-    # 寻找局部峰值和谷值
-    price_highs = recent_close.rolling(3, center=True).max()
-    price_lows = recent_close.rolling(3, center=True).min()
-    rsi_highs = recent_rsi.rolling(3, center=True).max()
-    rsi_lows = recent_rsi.rolling(3, center=True).min()
-    
-    # 检查看跌背离 (价格更高的高点，RSI 更低的高点)
+
+    high_indices = [
+        index for index in range(1, len(recent_close) - 1)
+        if recent_close.iloc[index] > recent_close.iloc[index - 1]
+        and recent_close.iloc[index] >= recent_close.iloc[index + 1]
+    ]
+    low_indices = [
+        index for index in range(1, len(recent_close) - 1)
+        if recent_close.iloc[index] < recent_close.iloc[index - 1]
+        and recent_close.iloc[index] <= recent_close.iloc[index + 1]
+    ]
+
     has_bearish = False
-    price_highs_clean = price_highs.dropna()
-    rsi_highs_clean = rsi_highs.dropna()
-    
-    if len(price_highs_clean) >= 2 and len(rsi_highs_clean) >= 2:
-        price_peak_1 = price_highs_clean.iloc[-1]
-        price_peak_2 = price_highs_clean.iloc[-2]
-        rsi_peak_1 = rsi_highs_clean.iloc[-1]
-        rsi_peak_2 = rsi_highs_clean.iloc[-2]
-        
-        if price_peak_1 > price_peak_2 and rsi_peak_1 < rsi_peak_2:
-            has_bearish = True
-    
-    # 检查看涨背离 (价格更低的低点，RSI 更高的低点)
+    if len(high_indices) >= 2:
+        previous, current = high_indices[-2:]
+        has_bearish = (
+            recent_close.iloc[current] > recent_close.iloc[previous]
+            and recent_rsi.iloc[current] < recent_rsi.iloc[previous]
+        )
+
     has_bullish = False
-    price_lows_clean = price_lows.dropna()
-    rsi_lows_clean = rsi_lows.dropna()
-    
-    if len(price_lows_clean) >= 2 and len(rsi_lows_clean) >= 2:
-        price_trough_1 = price_lows_clean.iloc[-1]
-        price_trough_2 = price_lows_clean.iloc[-2]
-        rsi_trough_1 = rsi_lows_clean.iloc[-1]
-        rsi_trough_2 = rsi_lows_clean.iloc[-2]
-        
-        if price_trough_1 < price_trough_2 and rsi_trough_1 > rsi_trough_2:
-            has_bullish = True
+    if len(low_indices) >= 2:
+        previous, current = low_indices[-2:]
+        has_bullish = (
+            recent_close.iloc[current] < recent_close.iloc[previous]
+            and recent_rsi.iloc[current] > recent_rsi.iloc[previous]
+        )
     
     # 确定背离类型
     if has_bearish:
@@ -582,12 +619,25 @@ def format_indicator_summary(summary: IndicatorSummary) -> str:
     Returns:
         用于提示词的格式化字符串
     """
-    return f"""[ASSET: {summary.symbol}]
-- Price: ${summary.current_price:,.2f} | VWAP: ${summary.vwap:,.2f} ({summary.price_vs_vwap})
-- Trend: {summary.trend.trend_direction} ({summary.trend.trend_strength}) | EMA20: ${summary.trend.ema_20:,.2f}, EMA50: ${summary.trend.ema_50:,.2f}
-- Structure: Support ${summary.support_resistance.nearest_support:,.2f} | Resistance ${summary.support_resistance.nearest_resistance:,.2f}
-- Volatility: ATR ${summary.atr:,.2f} ({summary.atr_percent:.2f}%) | BBands {'SQUEEZE' if summary.bollinger.is_squeeze else 'Normal'}
-- RSI: {summary.rsi:.1f} ({summary.rsi_condition}) | Divergence: {summary.divergence.divergence_type}"""
+    values = {
+        "ABOVE": "上方",
+        "BELOW": "下方",
+        "BULLISH": "看涨",
+        "BEARISH": "看跌",
+        "NEUTRAL": "中性",
+        "STRONG": "强",
+        "MODERATE": "中",
+        "WEAK": "弱",
+        "OVERBOUGHT": "超买",
+        "OVERSOLD": "超卖",
+        "NONE": "无",
+    }
+    return f"""[资产: {summary.symbol}]
+- 价格: ${summary.current_price:,.2f} | VWAP: ${summary.vwap:,.2f} ({values.get(summary.price_vs_vwap, summary.price_vs_vwap)})
+- 趋势: {values.get(summary.trend.trend_direction, summary.trend.trend_direction)} ({values.get(summary.trend.trend_strength, summary.trend.trend_strength)}) | EMA20: ${summary.trend.ema_20:,.2f}, EMA50: ${summary.trend.ema_50:,.2f}
+- 结构: 支撑 ${summary.support_resistance.nearest_support:,.2f} | 阻力 ${summary.support_resistance.nearest_resistance:,.2f}
+- 波动: ATR ${summary.atr:,.2f} ({summary.atr_percent:.2f}%) | 布林带 {'挤压' if summary.bollinger.is_squeeze else '正常'}
+- RSI: {summary.rsi:.1f} ({values.get(summary.rsi_condition, summary.rsi_condition)}) | 背离: {values.get(summary.divergence.divergence_type, summary.divergence.divergence_type)}"""
 
 
 def format_ohlcv_for_prompt(ohlcv: list, timeframe: str, limit: int = 100) -> str:
@@ -609,6 +659,19 @@ def format_ohlcv_for_prompt(ohlcv: list, timeframe: str, limit: int = 100) -> st
     """
     if not ohlcv or len(ohlcv) < 5:
         return f"[{timeframe} K线] 数据不足"
+
+    normalized = create_dataframe(ohlcv).reset_index()
+    ohlcv = [
+        [
+            int(row.timestamp.timestamp() * 1000),
+            row.open,
+            row.high,
+            row.low,
+            row.close,
+            row.volume,
+        ]
+        for row in normalized.itertuples(index=False)
+    ]
     
     # 确保不超过实际数据量
     actual_limit = min(limit, len(ohlcv))
@@ -640,7 +703,7 @@ def _format_basic(ohlcv: list, timeframe: str, limit: int, time_fmt: str) -> str
     ma60 = calc_sma(closes, 60) if len(closes) >= 60 else [None] * len(closes)
     
     lines = [f"[{timeframe} K线 (最近{limit}根)]"]
-    lines.append("Time | Close | Vol | MA5 | MA60")
+    lines.append("时间 | 收盘价 | 成交量 | MA5 | MA60")
     
     for i in range(-limit, 0):
         candle = ohlcv[i]
@@ -674,7 +737,7 @@ def _format_with_short_indicators(ohlcv: list, timeframe: str, limit: int, time_
     percent_b = percent_b.fillna(0.5)
     
     lines = [f"[{timeframe} K线 (最近{limit}根) - 含指标]"]
-    lines.append("Time | Close | RSI | BB%B | EMA20 | Vol")
+    lines.append("时间 | 收盘价 | RSI | BB%B | EMA20 | 成交量")
     
     for i in range(-limit, 0):
         candle = ohlcv[i]
@@ -687,7 +750,7 @@ def _format_with_short_indicators(ohlcv: list, timeframe: str, limit: int, time_
         ema20_val = ema20_series.iloc[i]
         
         # 格式化 RSI 状态标记
-        rsi_str = f"{rsi_val:.0f}" if not pd.isna(rsi_val) else "N/A"
+        rsi_str = f"{rsi_val:.0f}" if not pd.isna(rsi_val) else "不可用"
         if not pd.isna(rsi_val):
             if rsi_val >= 70:
                 rsi_str += "↑"  # 超买
@@ -696,7 +759,7 @@ def _format_with_short_indicators(ohlcv: list, timeframe: str, limit: int, time_
         
         # 格式化 %B
         if pd.isna(bb_val):
-            bb_str = "N/A"
+            bb_str = "不可用"
         elif bb_val > 1:
             bb_str = f"{bb_val:.2f}↑"
         elif bb_val < 0:
@@ -704,7 +767,7 @@ def _format_with_short_indicators(ohlcv: list, timeframe: str, limit: int, time_
         else:
             bb_str = f"{bb_val:.2f}"
         
-        ema20_str = f"${ema20_val:,.2f}" if not pd.isna(ema20_val) else "N/A"
+        ema20_str = f"${ema20_val:,.2f}" if not pd.isna(ema20_val) else "不可用"
         
         lines.append(f"{ts} | ${close:,.2f} | {rsi_str} | {bb_str} | {ema20_str} | {volume:,.0f}")
     
@@ -725,7 +788,7 @@ def _format_with_trend_indicators(ohlcv: list, timeframe: str, limit: int, time_
     macd_line, signal_line, histogram = _macd(df['close'], 12, 26, 9)
     
     lines = [f"[{timeframe} K线 (最近{limit}根) - 含趋势指标]"]
-    lines.append("Time | Close | RSI | MACD | Signal | Hist | Vol")
+    lines.append("时间 | 收盘价 | RSI | MACD | 信号线 | 柱状图 | 成交量")
     
     for i in range(-limit, 0):
         candle = ohlcv[i]
@@ -739,7 +802,7 @@ def _format_with_trend_indicators(ohlcv: list, timeframe: str, limit: int, time_
         hist_val = histogram.iloc[i]
         
         # 格式化 RSI
-        rsi_str = f"{rsi_val:.0f}" if not pd.isna(rsi_val) else "N/A"
+        rsi_str = f"{rsi_val:.0f}" if not pd.isna(rsi_val) else "不可用"
         if not pd.isna(rsi_val):
             if rsi_val >= 70:
                 rsi_str += "↑"
@@ -748,9 +811,9 @@ def _format_with_trend_indicators(ohlcv: list, timeframe: str, limit: int, time_
         
         # 格式化 MACD (根据价格缩放显示)
         if pd.isna(macd_val) or pd.isna(signal_val) or pd.isna(hist_val):
-            macd_str = "N/A"
-            signal_str = "N/A"
-            hist_str = "N/A"
+            macd_str = "不可用"
+            signal_str = "不可用"
+            hist_str = "不可用"
         else:
             macd_str = f"{macd_val:+.2f}"
             signal_str = f"{signal_val:+.2f}"

@@ -3,53 +3,89 @@ services:
     build: .
     container_name: opennof1_bot
     restart: unless-stopped
+    # 留出足够时间让进行中的交易周期收尾，避免被强杀后留下待对账记录
+    stop_grace_period: 150s
     ports:
-      - "5000:5000"
-    volumes:
-      - .:/app
-      - ./brain:/app/brain
-      # 挂载主机时间，确保容器时间同步
-      - /etc/localtime:/etc/localtime:ro
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:5000:5000"
     depends_on:
       db:
         condition: service_healthy
     environment:
-      - FLASK_ENV=production
-      - DEBUG=False
-      # Database connection
-      - DATABASE_URL=postgresql://opennof1:secure_password@db:5432/opennof1_db
-      # Pass API keys
-      - BINANCE_API_KEY=${BINANCE_API_KEY}
-      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
-      # AI Provider 1 (Primary)
-      - AI_1_API_KEY=${AI_1_API_KEY}
-      - AI_1_BASE_URL=${AI_1_BASE_URL:-https://api.deepseek.com/v1}
-      - AI_1_MODEL=${AI_1_MODEL:-deepseek-chat}
-      # AI Provider 2 (Fallback, optional)
-      - AI_2_API_KEY=${AI_2_API_KEY:-}
-      - AI_2_BASE_URL=${AI_2_BASE_URL:-}
-      - AI_2_MODEL=${AI_2_MODEL:-}
+      FLASK_ENV: production
+      AUTO_CREATE_SCHEMA: "false"
+      FLASK_SECRET_KEY: "${FLASK_SECRET_KEY:?必须配置 FLASK_SECRET_KEY}"
+      CONSOLE_PASSWORD: "${CONSOLE_PASSWORD:?必须配置 CONSOLE_PASSWORD}"
+      CONSOLE_AUTH_ENABLED: "${CONSOLE_AUTH_ENABLED:-true}"
+      CONSOLE_READONLY_AUTH_ENABLED: "${CONSOLE_READONLY_AUTH_ENABLED:-true}"
+      CONSOLE_SESSION_TTL_MINUTES: "${CONSOLE_SESSION_TTL_MINUTES:-60}"
+      SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-true}"
+      CUSTOM_INSTRUCTIONS_MAX_CHARS: "${CUSTOM_INSTRUCTIONS_MAX_CHARS:-10000}"
+      TIMEZONE: "${TIMEZONE:-+8}"
+      DATABASE_URL: "postgresql://opennof1:${POSTGRES_PASSWORD:?必须配置 POSTGRES_PASSWORD}@db:5432/opennof1_db"
+      BINANCE_API_KEY: "${BINANCE_API_KEY:-}"
+      BINANCE_API_SECRET: "${BINANCE_API_SECRET:-}"
+      BINANCE_TESTNET: "${BINANCE_TESTNET:-false}"
+      EXCHANGE_TIMEOUT_SECONDS: "${EXCHANGE_TIMEOUT_SECONDS:-15}"
+      BINANCE_RECV_WINDOW_MS: "${BINANCE_RECV_WINDOW_MS:-10000}"
+      TRADING_MODE: "${TRADING_MODE:-paper}"
+      LIVE_TRADING_CONFIRMATION: "${LIVE_TRADING_CONFIRMATION:-}"
+      PAPER_INITIAL_BALANCE_USDT: "${PAPER_INITIAL_BALANCE_USDT:-10000}"
+      PAPER_TAKER_FEE_RATE: "${PAPER_TAKER_FEE_RATE:-0.0004}"
+      PAPER_DEFAULT_LEVERAGE: "${PAPER_DEFAULT_LEVERAGE:-1}"
+      AI_1_API_KEY: "${AI_1_API_KEY}"
+      AI_1_BASE_URL: "${AI_1_BASE_URL:-https://api.deepseek.com/v1}"
+      AI_1_MODEL: "${AI_1_MODEL:-deepseek-chat}"
+      AI_TIMEOUT_SECONDS: "${AI_TIMEOUT_SECONDS:-60}"
+      AI_MAX_RETRIES: "${AI_MAX_RETRIES:-2}"
+      AI_MAX_TOOL_CALLS: "${AI_MAX_TOOL_CALLS:-10}"
+      AI_MAX_MEMORY_CHARS: "${AI_MAX_MEMORY_CHARS:-4000}"
+      AI_MAX_RESPONSE_TOKENS: "${AI_MAX_RESPONSE_TOKENS:-8000}"
+      AI_MAX_PROMPT_CHARS: "${AI_MAX_PROMPT_CHARS:-120000}"
+      AI_MAX_DAILY_TOKENS: "${AI_MAX_DAILY_TOKENS:-0}"
+      AI_TEMPERATURE: "${AI_TEMPERATURE:-0.2}"
+      AI_2_API_KEY: "${AI_2_API_KEY:-}"
+      AI_2_BASE_URL: "${AI_2_BASE_URL:-}"
+      AI_2_MODEL: "${AI_2_MODEL:-}"
+      TRADING_SYMBOLS: "${TRADING_SYMBOLS:-BTC/USDT,ETH/USDT,BNB/USDT,SOL/USDT,DOGE/USDT}"
+      TRADING_INTERVAL_MINUTES: "${TRADING_INTERVAL_MINUTES:-3}"
+      CANDLE_LIMIT: "${CANDLE_LIMIT:-300}"
+      KLINE_DISPLAY_LIMIT: "${KLINE_DISPLAY_LIMIT:-30}"
+      MAX_CONSECUTIVE_CYCLE_FAILURES: "${MAX_CONSECUTIVE_CYCLE_FAILURES:-5}"
+      RISK_MAX_LEVERAGE: "${RISK_MAX_LEVERAGE:-20}"
+      RISK_MAX_SINGLE_TRADE_USDT: "${RISK_MAX_SINGLE_TRADE_USDT:-1000}"
+      RISK_MAX_POSITION_NOTIONAL_USDT: "${RISK_MAX_POSITION_NOTIONAL_USDT:-3000}"
+      RISK_MAX_TOTAL_NOTIONAL_USDT: "${RISK_MAX_TOTAL_NOTIONAL_USDT:-5000}"
+      RISK_MIN_FREE_BALANCE_USDT: "${RISK_MIN_FREE_BALANCE_USDT:-0}"
+      RISK_REQUIRE_PROTECTIVE_ORDER: "${RISK_REQUIRE_PROTECTIVE_ORDER:-true}"
+      RISK_MIN_PROTECTIVE_DISTANCE_PERCENT: "${RISK_MIN_PROTECTIVE_DISTANCE_PERCENT:-0.3}"
+      RISK_MAX_DAILY_LOSS_PERCENT: "${RISK_MAX_DAILY_LOSS_PERCENT:-10}"
+      RISK_MAX_DRAWDOWN_PERCENT: "${RISK_MAX_DRAWDOWN_PERCENT:-25}"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/api/status"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:5000/healthz', timeout=5)"
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
   db:
-    image: postgres:15-alpine
+    image: postgres:15.13-alpine
     container_name: opennof1_db
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=opennof1
-      - POSTGRES_PASSWORD=secure_password
-      - POSTGRES_DB=opennof1_db
+      POSTGRES_USER: opennof1
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?必须配置 POSTGRES_PASSWORD}"
+      POSTGRES_DB: opennof1_db
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U opennof1 -d opennof1_db"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
 volumes:
   pg_data:

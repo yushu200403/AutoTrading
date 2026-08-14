@@ -1,0 +1,20 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers -ra"
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 70
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]

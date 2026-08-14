@@ -287,3 +287,18 @@ input:checked+.toggle-slider {
 input:checked+.toggle-slider:before {
     transform: translateX(20px);
 }
+
+/* 未认证提示条 */
+.auth-banner {
+    padding: 0.5rem 1rem;
+    background: var(--red);
+    color: var(--bg-primary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: 0;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: center;
+}
+.auth-banner[hidden] {
+    display: none;
+}
