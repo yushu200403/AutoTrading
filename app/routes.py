@@ -91,27 +91,6 @@ def _control_auth_required(view):
     return wrapped
 
 
-def _readonly_auth_required(view):
-    """为只读接口提供会话认证。
-
-    只读接口不改变状态，因此不校验 CSRF 令牌，
-    但余额、持仓与模型推理同样属于敏感数据，默认要求认证。
-    """
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        config = current_app.config
-        if not (
-            config['CONSOLE_AUTH_ENABLED']
-            and config['CONSOLE_READONLY_AUTH_ENABLED']
-        ):
-            return view(*args, **kwargs)
-        if not _session_authenticated():
-            session.clear()
-            return jsonify({'error': '控制台会话未认证或已过期'}), 401
-        return view(*args, **kwargs)
-    return wrapped
-
-
 # =============================================================================
 # 页面路由
 # =============================================================================
@@ -138,8 +117,33 @@ def healthz():
     return jsonify({'status': 'ok'})
 
 
+@main_bp.route('/api/auth-status')
+def api_auth_status():
+    """返回当前浏览器是否具备控制权限。"""
+    authentication_required = current_app.config['CONSOLE_AUTH_ENABLED']
+    if not authentication_required:
+        return jsonify({
+            'authentication_required': False,
+            'control_access': True,
+        })
+
+    if not _session_authenticated():
+        session.clear()
+        control_access = False
+    else:
+        expected = session.get('csrf_token', '')
+        provided = request.headers.get('X-CSRF-Token', '')
+        control_access = bool(
+            expected and _constant_time_equal(provided, expected)
+        )
+
+    return jsonify({
+        'authentication_required': True,
+        'control_access': control_access,
+    })
+
+
 @main_bp.route('/api/status')
-@_readonly_auth_required
 def api_status():
     """获取机器人状态。"""
     if not _service:
@@ -151,7 +155,6 @@ def api_status():
 
 
 @main_bp.route('/api/tickers')
-@_readonly_auth_required
 def api_tickers():
     """获取当前行情数据（含 24h 迷你走势）。"""
     if not _service:
@@ -186,7 +189,6 @@ def api_tickers():
 
 
 @main_bp.route('/api/alpha')
-@_readonly_auth_required
 def api_alpha():
     """获取 Alpha 指标。"""
     if not _service:
@@ -208,7 +210,6 @@ def api_alpha():
 
 
 @main_bp.route('/api/decisions')
-@_readonly_auth_required
 def api_decisions():
     """获取近期交易决策（含工具调用详情）。"""
     try:
@@ -244,7 +245,6 @@ def api_decisions():
 
 
 @main_bp.route('/api/records')
-@_readonly_auth_required
 def api_records():
     """获取历史交易记录。"""
     try:
@@ -281,7 +281,6 @@ def api_records():
 
 
 @main_bp.route('/api/positions')
-@_readonly_auth_required
 def api_positions():
     """获取当前持仓。"""
     if not _service:
@@ -296,7 +295,6 @@ def api_positions():
 
 
 @main_bp.route('/api/memory')
-@_readonly_auth_required
 def api_memory():
     """获取当前记忆白板内容。"""
     try:
@@ -409,7 +407,6 @@ def api_toggle_live():
 
 
 @main_bp.route('/api/instructions', methods=['GET'])
-@_readonly_auth_required
 def api_get_instructions():
     """获取当前自定义交易指令。"""
     try:
@@ -490,7 +487,6 @@ def api_close_all_positions():
 # =============================================================================
 
 @main_bp.route('/api/account-summary')
-@_readonly_auth_required
 def api_account_summary():
     """获取账户总览数据。"""
     if not _service:
@@ -542,7 +538,6 @@ def api_account_summary():
 
 
 @main_bp.route('/api/equity-history')
-@_readonly_auth_required
 def api_equity_history():
     """获取收益历史数据（用于曲线图）。"""
     try:

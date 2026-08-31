@@ -1,7 +1,5 @@
 """交易周期编排的集成回归测试。"""
 
-from datetime import timedelta
-from decimal import Decimal
 from threading import Lock
 from types import SimpleNamespace
 
@@ -11,11 +9,10 @@ from app import db
 from app.bot.ai_agent import AIAgentError, AIResponse
 from app.bot.data_engine import MarketContext
 from app.bot.engine import TradingEngine
-from app.bot.exceptions import RiskLimitBreachedError
 from app.bot.executor import ExecutionResult
 from app.bot.tz_utils import utc_now
 from app.bot.xml_parser import ToolCall
-from app.models import EquitySnapshot, TradeDecision, TradingCycle
+from app.models import TradeDecision, TradingCycle
 from tests.conftest import TestConfig
 
 
@@ -201,101 +198,6 @@ def test_unresolved_intent_blocks_new_cycle(app):
 
         assert result["success"] is False
         assert "必须人工核对交易执行端" in result["error"]
-        assert result["halt_required"] is True
-        assert engine.ai_agent.calls == 0
-
-
-def _limits_engine(app, equity_rows, **overrides):
-    """构造带净值历史的引擎，用于验证账户级熔断。"""
-    engine = _engine([])
-    engine.config = type("熔断配置", (TestConfig,), overrides)
-    with app.app_context():
-        for timestamp, equity in equity_rows:
-            db.session.add(EquitySnapshot(
-                timestamp=timestamp,
-                trading_mode="paper",
-                total_equity=equity,
-                free_balance=equity,
-                unrealized_pnl=0,
-                position_count=0,
-            ))
-        db.session.commit()
-    return engine
-
-
-def _context(total_equity):
-    return MarketContext(
-        timestamp=utc_now(),
-        advance_decline_ratio=1.0,
-        assets={},
-        account_balance={"total": total_equity, "free": total_equity},
-        positions=[],
-        pending_orders=[],
-        memory_content="",
-        trading_mode="paper",
-    )
-
-
-def test_daily_loss_breaker_halts_trading(app):
-    engine = _limits_engine(
-        app,
-        [(utc_now() - timedelta(hours=25), 1000)],
-        RISK_MAX_DAILY_LOSS_PERCENT=Decimal("10"),
-        RISK_MAX_DRAWDOWN_PERCENT=Decimal("0"),
-    )
-    with app.app_context():
-        # 净值从 1000 跌到 880，回落 12% 超过 10% 上限
-        with pytest.raises(RiskLimitBreachedError, match="日亏损上限"):
-            engine._check_account_limits(_context(880))
-        # 回落 5% 时不触发
-        engine._check_account_limits(_context(950))
-
-
-def test_drawdown_breaker_halts_trading(app):
-    engine = _limits_engine(
-        app,
-        [(utc_now() - timedelta(hours=1), 2000)],
-        RISK_MAX_DAILY_LOSS_PERCENT=Decimal("0"),
-        RISK_MAX_DRAWDOWN_PERCENT=Decimal("25"),
-    )
-    with app.app_context():
-        with pytest.raises(RiskLimitBreachedError, match="回撤上限"):
-            engine._check_account_limits(_context(1400))
-        engine._check_account_limits(_context(1900))
-
-
-def test_token_budget_breaker_halts_trading(app):
-    engine = _engine([])
-    engine.config = type(
-        "预算配置", (TestConfig,), {"AI_MAX_DAILY_TOKENS": 1000}
-    )
-    with app.app_context():
-        db.session.add(TradingCycle(
-            cycle_id="spent-cycle",
-            trading_mode="paper",
-            status="SUCCESS",
-            tokens_used=1200,
-        ))
-        db.session.commit()
-        with pytest.raises(RiskLimitBreachedError, match="token 用量"):
-            engine._check_account_limits(_context(1000))
-
-
-def test_breaker_marks_cycle_as_halt_required(app):
-    engine = _engine([_tool("update_memory", content="测试")])
-    engine.config = type(
-        "预算配置", (TestConfig,), {"AI_MAX_DAILY_TOKENS": 100}
-    )
-    with app.app_context():
-        db.session.add(TradingCycle(
-            cycle_id="over-budget",
-            trading_mode="paper",
-            status="SUCCESS",
-            tokens_used=500,
-        ))
-        db.session.commit()
-        result = engine.run_cycle()
-        assert result["success"] is False
         assert result["halt_required"] is True
         assert engine.ai_agent.calls == 0
 

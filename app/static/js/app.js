@@ -54,6 +54,9 @@ function applyColorModeToCharts() {
 // 页面状态
 let equityChart = null;
 let miniCharts = {};
+let controlAccessGranted = false;
+let controlAuthenticationRequired = true;
+let latestServiceRunning = null;
 
 // 使用浏览器本地时区格式化时间显示
 function formatTimeWithTZ(isoString, options = {}) {
@@ -111,6 +114,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     setupEventListeners();
 
+    await refreshControlAccess();
+
     await Promise.allSettled([
         updateStatus(),
         updateAccountSummary(),
@@ -152,24 +157,80 @@ function schedulePolling(task, interval) {
 
 const CSRF_TOKEN_KEY = 'opennof1_csrf_token';
 
-function isSettingsAuthenticated() {
-    return Boolean(sessionStorage.getItem(CSRF_TOKEN_KEY));
+function hasControlAccess() {
+    return controlAccessGranted;
 }
 
-// 只读接口默认也要求认证，未认证时给出明确提示而非空面板
-function setAuthBannerVisible(visible) {
+function updateServiceControlButtons() {
+    const startBtn = document.getElementById('btn-start');
+    const stopBtn = document.getElementById('btn-stop');
+    const locked = !hasControlAccess();
+
+    if (startBtn) {
+        startBtn.disabled = locked || latestServiceRunning !== false;
+    }
+    if (stopBtn) {
+        stopBtn.disabled = locked || latestServiceRunning !== true;
+    }
+}
+
+function updateControlAccessState() {
+    const locked = !hasControlAccess();
     const banner = document.getElementById('auth-banner');
-    if (banner) banner.hidden = !visible;
-}
-
-// 更新设置标签的显示状态
-function updateSettingsAuthState() {
     const authContainer = document.getElementById('settings-auth');
     const contentContainer = document.getElementById('settings-content');
-    const isAuth = isSettingsAuthenticated();
-    
-    if (authContainer) authContainer.style.display = isAuth ? 'none' : 'flex';
-    if (contentContainer) contentContainer.style.display = isAuth ? 'block' : 'none';
+    const protectedControls = [
+        'btn-run-once',
+        'btn-close-all',
+        'live-trading',
+        'btn-save-instructions'
+    ];
+
+    if (banner) {
+        banner.hidden = !(controlAuthenticationRequired && locked);
+    }
+    if (authContainer) {
+        authContainer.style.display = controlAuthenticationRequired && locked
+            ? 'flex'
+            : 'none';
+    }
+    if (contentContainer) contentContainer.style.display = 'block';
+
+    protectedControls.forEach(id => {
+        const control = document.getElementById(id);
+        if (!control) return;
+        control.disabled = locked;
+        control.title = locked ? '输入控制台密码后可操作' : '';
+    });
+
+    const instructions = document.getElementById('custom-instructions');
+    if (instructions) {
+        instructions.readOnly = locked;
+        instructions.title = locked ? '访客仅可查看，输入控制台密码后可修改' : '';
+    }
+
+    updateServiceControlButtons();
+}
+
+function setControlAccess(granted, authenticationRequired = controlAuthenticationRequired) {
+    controlAccessGranted = Boolean(granted);
+    controlAuthenticationRequired = Boolean(authenticationRequired);
+    if (!controlAccessGranted) {
+        sessionStorage.removeItem(CSRF_TOKEN_KEY);
+    }
+    updateControlAccessState();
+}
+
+async function refreshControlAccess() {
+    const csrfToken = sessionStorage.getItem(CSRF_TOKEN_KEY) || '';
+    const result = await fetchAPI('/auth-status', {
+        headers: { 'X-CSRF-Token': csrfToken }
+    });
+    if (!result || typeof result.control_access !== 'boolean') {
+        setControlAccess(false, true);
+        return;
+    }
+    setControlAccess(result.control_access, result.authentication_required);
 }
 
 async function verifySettingsPassword() {
@@ -185,7 +246,7 @@ async function verifySettingsPassword() {
     
     if (result?.success) {
         sessionStorage.setItem(CSRF_TOKEN_KEY, result.csrf_token);
-        updateSettingsAuthState();
+        setControlAccess(true, true);
         fetchInstructions();
         fetchMemory();
     } else {
@@ -210,7 +271,7 @@ function initTabs() {
             
             // 切换到设置标签时更新认证状态
             if (tabId === 'settings') {
-                updateSettingsAuthState();
+                updateControlAccessState();
             }
             // 切换到记录标签时获取最新记录
             if (tabId === 'records') {
@@ -228,7 +289,7 @@ function initTabs() {
     });
     
     // 初始化设置标签认证状态
-    updateSettingsAuthState();
+    updateControlAccessState();
 }
 
 // --- 币种 24 小时迷你走势 ---
@@ -501,13 +562,10 @@ async function fetchAPI(endpoint, options = {}) {
         const data = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
         if (!response.ok) {
             if (response.status === 401 || response.status === 403) {
-                sessionStorage.removeItem(CSRF_TOKEN_KEY);
-                updateSettingsAuthState();
-                setAuthBannerVisible(true);
+                setControlAccess(false);
             }
             return { ...data, http_status: response.status };
         }
-        setAuthBannerVisible(false);
         return data;
     } catch (error) {
         console.error(`接口请求失败 (${endpoint}):`, error);
@@ -522,28 +580,25 @@ async function updateStatus() {
 
     const dotEl = document.getElementById('status-dot');
     const textEl = document.getElementById('status-text');
-    const startBtn = document.getElementById('btn-start');
-    const stopBtn = document.getElementById('btn-stop');
 
-    if (!data) {
+    if (!data || typeof data.running !== 'boolean') {
+        latestServiceRunning = null;
         if (dotEl) dotEl.className = 'status-dot disconnected';
         if (textEl) textEl.textContent = '已断开';
-        if (startBtn) startBtn.disabled = true;
-        if (stopBtn) stopBtn.disabled = true;
+        updateServiceControlButtons();
         return;
     }
 
+    latestServiceRunning = data.running;
     if (data.running) {
         if (dotEl) dotEl.className = 'status-dot running';
         if (textEl) textEl.textContent = '运行中';
-        if (startBtn) startBtn.disabled = true;
-        if (stopBtn) stopBtn.disabled = false;
     } else {
         if (dotEl) dotEl.className = 'status-dot stopped';
         if (textEl) textEl.textContent = '已停止';
-        if (startBtn) startBtn.disabled = false;
-        if (stopBtn) stopBtn.disabled = true;
     }
+
+    updateServiceControlButtons();
 
     const liveToggle = document.getElementById('live-trading');
     if (liveToggle) liveToggle.checked = data.live_trading || false;
@@ -842,7 +897,7 @@ function setupEventListeners() {
             }
         } finally {
             btn.textContent = originalText;
-            btn.disabled = false;
+            btn.disabled = !hasControlAccess();
         }
     });
 
@@ -923,7 +978,7 @@ function setupEventListeners() {
         btn.textContent = '一键全平';
         btn.style.backgroundColor = '';
         btn.style.borderColor = '';
-        btn.disabled = false;
+        btn.disabled = !hasControlAccess();
     }
 
     // 实盘交易开关

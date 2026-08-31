@@ -106,12 +106,19 @@ def test_control_route_requires_session_and_csrf(app):
     init_service(service)
     client = app.test_client()
 
+    assert client.get("/api/auth-status").get_json() == {
+        "authentication_required": True,
+        "control_access": False,
+    }
     assert client.post("/api/start").status_code == 401
     login = client.post(
         "/api/verify-password", json={"password": "test-password"}
     )
     assert login.status_code == 200
     csrf = login.get_json()["csrf_token"]
+    assert client.get(
+        "/api/auth-status", headers={"X-CSRF-Token": csrf}
+    ).get_json()["control_access"] is True
     assert client.post("/api/start").status_code == 403
 
     response = client.post("/api/start", headers={"X-CSRF-Token": csrf})
@@ -207,7 +214,7 @@ def test_read_and_control_api_contracts(app):
     assert client.get("/settings").status_code == 302
     # 存活探针不需要认证，也不返回业务数据
     assert client.get("/healthz").get_json() == {"status": "ok"}
-    # 只读接口会暴露余额与模型推理，默认同样要求认证
+    # 余额、持仓、模型推理、指令与记忆等业务数据均允许访客只读访问
     for endpoint in (
         "/api/status",
         "/api/tickers",
@@ -220,9 +227,8 @@ def test_read_and_control_api_contracts(app):
         "/api/account-summary",
         "/api/equity-history",
     ):
-        assert client.get(endpoint).status_code == 401, endpoint
+        assert client.get(endpoint).status_code == 200, endpoint
 
-    headers = _login(client)
     assert client.get("/api/status").get_json()["trading_mode"] == "paper"
     assert client.get("/api/tickers").get_json()[0]["sparkline"] == [100]
     assert len(client.get("/api/alpha").get_json()["top_gainers"]) == 3
@@ -240,6 +246,25 @@ def test_read_and_control_api_contracts(app):
     assert history["base_equity"] == 1000
     assert len(history["data"]) == 2
 
+    # 页面禁用控件只是交互提示，服务端仍必须拒绝所有访客写操作
+    guest_requests = (
+        ("/api/start", {}),
+        ("/api/stop", {}),
+        ("/api/live", {"json": {"enable": True}}),
+        ("/api/instructions", {"json": {"instructions": "高风险指令"}}),
+        ("/api/run-once", {}),
+        ("/api/close-all", {}),
+        ("/api/logout", {}),
+    )
+    for endpoint, kwargs in guest_requests:
+        assert client.post(endpoint, **kwargs).status_code == 401, endpoint
+    assert service.events == []
+
+    headers = _login(client)
+    assert client.get("/api/auth-status", headers=headers).get_json() == {
+        "authentication_required": True,
+        "control_access": True,
+    }
     assert client.post("/api/start", headers=headers).status_code == 200
     assert client.post("/api/stop", headers=headers).status_code == 200
     invalid_live = client.post(
@@ -260,6 +285,9 @@ def test_read_and_control_api_contracts(app):
     assert client.post("/api/run-once", headers=headers).get_json()["success"] is True
     assert client.post("/api/close-all", headers=headers).get_json()["success"] is True
     assert client.post("/api/logout", headers=headers).status_code == 200
+    assert client.get("/api/auth-status", headers=headers).get_json()[
+        "control_access"
+    ] is False
     assert client.post("/api/start", headers=headers).status_code == 401
 
 
@@ -272,9 +300,26 @@ def test_service_unavailable_and_expired_session(app):
     with client.session_transaction() as session:
         session["console_authenticated_at"] = 1
         session["csrf_token"] = "expired"
+    assert client.get(
+        "/api/auth-status", headers={"X-CSRF-Token": "expired"}
+    ).get_json()["control_access"] is False
     assert client.post(
         "/api/start", headers={"X-CSRF-Token": "expired"}
     ).status_code == 401
+
+
+def test_explicitly_disabled_control_auth_allows_operations(app):
+    service = FakeService()
+    init_service(service)
+    app.config["CONSOLE_AUTH_ENABLED"] = False
+    client = app.test_client()
+
+    assert client.get("/api/auth-status").get_json() == {
+        "authentication_required": False,
+        "control_access": True,
+    }
+    assert client.post("/api/start").status_code == 200
+    assert service.starts == 1
 
 
 def test_control_conflicts_and_unknown_failures_return_json(app):

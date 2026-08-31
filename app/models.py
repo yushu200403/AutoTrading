@@ -171,7 +171,7 @@ class EquitySnapshot(db.Model):
     """
     __tablename__ = 'equity_snapshot'
     __table_args__ = (
-        # 熔断与曲线查询都按交易模式过滤并按时间排序
+        # 收益曲线查询按交易模式过滤并按时间排序
         db.Index('ix_equity_snapshot_mode_timestamp', 'trading_mode', 'timestamp'),
     )
     
@@ -219,14 +219,6 @@ class EquitySnapshot(db.Model):
         records = query.all()
         return records[::-1]
     
-    @classmethod
-    def get_peak_equity(cls, trading_mode: str = None):
-        """获取历史最高净值，用于回撤熔断。"""
-        query = db.session.query(db.func.max(cls.total_equity))
-        if trading_mode:
-            query = query.filter(cls.trading_mode == trading_mode)
-        return query.scalar()
-
     @classmethod
     def get_24h_ago(cls, trading_mode: str = None):
         """获取24小时前的净值快照。"""
@@ -349,12 +341,4 @@ class TradingCycle(db.Model):
     finished_at = db.Column(db.DateTime(timezone=True))
     tokens_used = db.Column(db.Integer, nullable=False, default=0)
     error = db.Column(db.Text)
-
-    @classmethod
-    def tokens_used_since(cls, since: datetime) -> int:
-        """统计指定时刻以来累计消耗的模型 token 数。"""
-        total = db.session.query(
-            db.func.coalesce(db.func.sum(cls.tokens_used), 0)
-        ).filter(cls.started_at >= since).scalar()
-        return int(total or 0)
 

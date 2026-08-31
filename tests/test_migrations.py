@@ -50,7 +50,7 @@ def test_empty_database_upgrades_to_head(tmp_path):
     }.issubset(tables)
     # 遗留的挂单表已随模拟账本落地而移除
     assert "pending_order" not in tables
-    # token 预算与待对账探测所需的结构
+    # token 审计与待对账探测所需的结构
     assert "tokens_used" in cycle_columns
     assert "ix_trade_decision_execution_status" in decision_indexes
     assert revision == "20260814_03"

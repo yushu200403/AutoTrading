@@ -12,7 +12,6 @@ class FakeEngine:
     def __init__(self):
         self.config = SimpleNamespace(
             TRADING_INTERVAL_MINUTES=3,
-            MAX_CONSECUTIVE_CYCLE_FAILURES=2,
         )
         self.live_trading = False
         self.sync_calls = 0
@@ -93,7 +92,7 @@ def test_service_start_stop_and_controls(app, monkeypatch):
     assert status["trading_mode"] == "live"
 
 
-def test_trading_loop_records_failure_and_exception(app):
+def test_trading_loop_records_failed_result(app):
     engine = FakeEngine()
     service = TradingService(engine, app)
     engine.run_results = [{"success": False, "error": "模型不可用"}]
@@ -109,16 +108,6 @@ def test_trading_loop_records_failure_and_exception(app):
     service._trading_loop()
     assert service._last_error == "模型不可用"
     assert service._stop_event.is_set()
-
-    failing_engine = FakeEngine()
-    failing_engine.config.MAX_CONSECUTIVE_CYCLE_FAILURES = 1
-    failing_engine.run_results = [RuntimeError("数据库不可用")]
-    failing = TradingService(failing_engine, app)
-    failing._trading_loop()
-    assert failing._last_error == "数据库不可用"
-    assert "连续 1 个周期未成功" in failing.halt_reason
-    assert failing._stop_event.is_set()
-
 
 def test_loop_halts_immediately_when_reconciliation_required(app):
     engine = FakeEngine()
@@ -139,16 +128,16 @@ def test_loop_halts_immediately_when_reconciliation_required(app):
 
 
 def test_loop_survives_transient_failure_and_recovers(app):
-    """单个周期异常不得终止循环，否则机器人会静默停摆。"""
+    """连续异常与失败结果不得终止循环，后续成功周期应正常执行。"""
     engine = FakeEngine()
-    engine.config.MAX_CONSECUTIVE_CYCLE_FAILURES = 5
     engine.run_results = [
         RuntimeError("行情接口抖动"),
+        {"success": False, "error": "模型暂时不可用"},
         {"success": True},
     ]
     service = TradingService(engine, app)
     original_wait = service._wait_seconds
-    service._wait_seconds = lambda interval, elapsed, failures: 0
+    service._wait_seconds = lambda interval, elapsed: 0
 
     def stop_after_success():
         result = FakeEngine.run_cycle(engine)
@@ -159,23 +148,16 @@ def test_loop_survives_transient_failure_and_recovers(app):
     engine.run_cycle = stop_after_success
     service._trading_loop()
 
-    # 第一轮异常被记录，第二轮成功后错误被清空
+    # 前两轮失败未停止循环，第三轮成功后错误被清空
     assert service._last_error is None
     assert service.halt_reason is None
     assert engine.run_results == []
     service._wait_seconds = original_wait
 
 
-def test_backoff_grows_with_consecutive_failures(app):
+def test_wait_seconds_always_uses_configured_interval(app):
     service = TradingService(FakeEngine(), app)
     interval = 180
 
-    # 成功时按剩余时间等待
-    assert service._wait_seconds(interval, 20, 0) == 160
-    assert service._wait_seconds(interval, 300, 0) == 0
-    # 失败时指数退避并有上限
-    assert service._wait_seconds(interval, 0, 1) == 360
-    assert service._wait_seconds(interval, 0, 2) == 720
-    assert service._wait_seconds(interval, 0, 99) == min(
-        interval * 2 ** service.MAX_BACKOFF_MULTIPLIER, service.MAX_BACKOFF_SECONDS
-    )
+    assert service._wait_seconds(interval, 20) == 160
+    assert service._wait_seconds(interval, 300) == 0

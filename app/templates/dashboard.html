@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="auth-banner" id="auth-banner" hidden>
-    需要登录后才能查看账户与策略数据，请在右侧「设置」面板输入控制台密码。
+    当前为访客只读模式：可查看全部数据；输入控制台密码后可使用操作与修改功能。
 </div>
 <div class="dashboard-grid">
 
@@ -142,26 +142,26 @@
                 <div class="auth-box">
                     <div class="auth-icon">🔐</div>
                     <div class="auth-title">访问控制</div>
-                    <p class="auth-desc">请输入密码以访问设置页面</p>
+                    <p class="auth-desc">全部数据均可查看，输入密码后可操作和修改</p>
                     <input type="password" id="settings-password" class="form-control" placeholder="输入密码">
                     <div id="password-error" class="text-danger" style="display: none; margin-top: 0.5rem;">密码错误，请重试</div>
                     <button class="btn btn-primary" id="btn-verify-password" style="width: 100%; margin-top: 1rem;">验证密码</button>
                 </div>
             </div>
 
-            <!-- 设置内容 (验证后显示) -->
-            <div id="settings-content" class="settings-panel" style="display: none;">
+            <!-- 设置内容始终可见，访客状态下写操作控件保持锁定 -->
+            <div id="settings-content" class="settings-panel">
                 <!-- 系统控制 -->
                 <div class="settings-section">
                     <div class="settings-section-header">系统控制</div>
                     <div class="settings-section-body">
                         <div class="control-buttons">
-                            <button id="btn-start" class="btn btn-success">启动</button>
+                            <button id="btn-start" class="btn btn-success" disabled>启动</button>
                             <button id="btn-stop" class="btn btn-danger" disabled>停止</button>
                         </div>
                         <div class="control-buttons" style="margin-top: 0.5rem;">
-                            <button id="btn-run-once" class="btn">运行单次</button>
-                            <button id="btn-close-all" class="btn">一键全平</button>
+                            <button id="btn-run-once" class="btn" disabled>运行单次</button>
+                            <button id="btn-close-all" class="btn" disabled>一键全平</button>
                         </div>
                     </div>
                 </div>
@@ -172,7 +172,7 @@
                     <div class="settings-section-body">
                         <div class="status-row">
                             <label class="toggle-switch">
-                                <input type="checkbox" id="live-trading">
+                                <input type="checkbox" id="live-trading" disabled>
                                 <span class="toggle-slider"></span>
                             </label>
                             <span>启用实盘交易</span>
@@ -198,10 +198,10 @@
                 <div class="settings-section">
                     <div class="settings-section-header">自定义指令</div>
                     <div class="settings-section-body">
-                        <textarea id="custom-instructions" class="form-control"
+                        <textarea id="custom-instructions" class="form-control" readonly
                             placeholder="输入给 AI 的自定义指令，每一周期都会连同市场数据，一并提供给 AI ..."></textarea>
                         <button id="btn-save-instructions" class="btn btn-primary"
-                            style="width: 100%; margin-top: 0.5rem;">保存</button>
+                            style="width: 100%; margin-top: 0.5rem;" disabled>保存</button>
                     </div>
                 </div>
 

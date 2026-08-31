@@ -2,8 +2,6 @@
 
 import json
 import logging
-from datetime import timedelta
-from decimal import Decimal
 from threading import Lock
 from typing import Optional
 from uuid import uuid4
@@ -20,10 +18,7 @@ from app.models import (
 )
 from app.bot.ai_agent import AIAgent, AIAgentError, AIResponse
 from app.bot.data_engine import DataEngine, MarketContext
-from app.bot.exceptions import (
-    ReconciliationRequiredError,
-    RiskLimitBreachedError,
-)
+from app.bot.exceptions import ReconciliationRequiredError
 from app.bot.executor import ExecutionResult, TradeExecutor
 from app.bot.paper_broker import PaperBroker
 from app.bot.prompts import build_system_prompt, build_user_prompt
@@ -314,40 +309,6 @@ class TradingEngine:
                 unprotected.append(f"{symbol} {position['side']}")
         return unprotected
 
-    def _check_account_limits(self, context: MarketContext) -> None:
-        """校验模型预算与账户级熔断，触发时暂停交易并要求人工介入。"""
-        config = self.config
-        if config.AI_MAX_DAILY_TOKENS:
-            spent = TradingCycle.tokens_used_since(utc_now() - timedelta(hours=24))
-            if spent >= config.AI_MAX_DAILY_TOKENS:
-                raise RiskLimitBreachedError(
-                    f"最近 24 小时模型 token 用量 {spent} 已达上限 "
-                    f"{config.AI_MAX_DAILY_TOKENS}"
-                )
-        total_equity = Decimal(str(context.account_balance.get("total", 0) or 0))
-        if total_equity <= 0:
-            return
-        if config.RISK_MAX_DAILY_LOSS_PERCENT > 0:
-            baseline = EquitySnapshot.get_24h_ago(self.trading_mode)
-            if baseline is not None and Decimal(str(baseline.total_equity)) > 0:
-                previous = Decimal(str(baseline.total_equity))
-                loss_percent = (previous - total_equity) / previous * 100
-                if loss_percent >= config.RISK_MAX_DAILY_LOSS_PERCENT:
-                    raise RiskLimitBreachedError(
-                        f"最近 24 小时净值回落 {loss_percent:.2f}%，已达日亏损上限 "
-                        f"{config.RISK_MAX_DAILY_LOSS_PERCENT}%"
-                    )
-        if config.RISK_MAX_DRAWDOWN_PERCENT > 0:
-            peak = EquitySnapshot.get_peak_equity(self.trading_mode)
-            if peak is not None and Decimal(str(peak)) > 0:
-                peak_equity = Decimal(str(peak))
-                drawdown = (peak_equity - total_equity) / peak_equity * 100
-                if drawdown >= config.RISK_MAX_DRAWDOWN_PERCENT:
-                    raise RiskLimitBreachedError(
-                        f"净值自峰值回撤 {drawdown:.2f}%，已达回撤上限 "
-                        f"{config.RISK_MAX_DRAWDOWN_PERCENT}%"
-                    )
-
     def _get_valid_ai_response(
         self,
         prompt_context: str,
@@ -431,7 +392,6 @@ class TradingEngine:
                 account_provider=self.broker,
                 trading_mode=self.trading_mode,
             )
-            self._check_account_limits(context)
             prompt_context = self.data_engine.build_prompt_context(context)
             snapshot = self._save_snapshot(context)
             result["market_context"] = context
@@ -506,7 +466,7 @@ class TradingEngine:
             db.session.rollback()
             logger.exception("交易周期失败 %s: %s", cycle_id, exc)
             result["error"] = str(exc)
-            if isinstance(exc, (ReconciliationRequiredError, RiskLimitBreachedError)):
+            if isinstance(exc, ReconciliationRequiredError):
                 result["halt_required"] = True
                 logger.critical("交易已暂停，需人工处理: %s", exc)
             stored_cycle = db.session.get(TradingCycle, cycle_id)
@@ -514,7 +474,7 @@ class TradingEngine:
                 stored_cycle.status = "FAILED"
                 stored_cycle.error = str(exc)
                 stored_cycle.finished_at = utc_now()
-                # 失败周期同样可能已消耗 token，必须计入预算
+                # 失败周期同样记录实际 token 用量，保留完整审计信息
                 stored_cycle.tokens_used = result["tokens_used"]
                 db.session.commit()
         finally:

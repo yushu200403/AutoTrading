@@ -89,7 +89,6 @@ class Config:
     AI_MAX_MEMORY_CHARS = _env_int("AI_MAX_MEMORY_CHARS", 4000, 100, 200000)
     AI_MAX_RESPONSE_TOKENS = _env_int("AI_MAX_RESPONSE_TOKENS", 8000, 256, 32000)
     AI_MAX_PROMPT_CHARS = _env_int("AI_MAX_PROMPT_CHARS", 120000, 10000, 2000000)
-    AI_MAX_DAILY_TOKENS = _env_int("AI_MAX_DAILY_TOKENS", 0, 0, 1000000000)
     AI_TEMPERATURE = float(_env_decimal("AI_TEMPERATURE", "0.2"))
 
     TRADING_MODE = os.getenv("TRADING_MODE", "paper").strip().lower()
@@ -106,9 +105,6 @@ class Config:
     TIMEFRAMES = ["1m", "15m", "1h", "4h", "1d"]
     CANDLE_LIMIT = _env_int("CANDLE_LIMIT", 300, 200, 1500)
     KLINE_DISPLAY_LIMIT = _env_int("KLINE_DISPLAY_LIMIT", 30, 5, 300)
-    MAX_CONSECUTIVE_CYCLE_FAILURES = _env_int(
-        "MAX_CONSECUTIVE_CYCLE_FAILURES", 5, 1, 100
-    )
 
     PAPER_INITIAL_BALANCE_USDT = _env_decimal(
         "PAPER_INITIAL_BALANCE_USDT", "10000", allow_zero=False
@@ -132,14 +128,8 @@ class Config:
     RISK_MIN_PROTECTIVE_DISTANCE_PERCENT = _env_decimal(
         "RISK_MIN_PROTECTIVE_DISTANCE_PERCENT", "0.3"
     )
-    # 账户级熔断：0 表示关闭该项检查
-    RISK_MAX_DAILY_LOSS_PERCENT = _env_decimal("RISK_MAX_DAILY_LOSS_PERCENT", "10")
-    RISK_MAX_DRAWDOWN_PERCENT = _env_decimal("RISK_MAX_DRAWDOWN_PERCENT", "25")
-
     CONSOLE_PASSWORD = os.getenv("CONSOLE_PASSWORD", "")
     CONSOLE_AUTH_ENABLED = _env_bool("CONSOLE_AUTH_ENABLED", True)
-    # 只读接口同样会暴露余额、持仓与模型推理，默认一并要求认证
-    CONSOLE_READONLY_AUTH_ENABLED = _env_bool("CONSOLE_READONLY_AUTH_ENABLED", True)
     CONSOLE_SESSION_TTL_MINUTES = _env_int(
         "CONSOLE_SESSION_TTL_MINUTES", 60, 1, 1440
     )
@@ -214,11 +204,6 @@ class Config:
             raise ValueError(
                 "RISK_MIN_PROTECTIVE_DISTANCE_PERCENT 必须在 0（含）到 100（不含）之间"
             )
-        if not 0 <= cls.RISK_MAX_DAILY_LOSS_PERCENT <= 100:
-            raise ValueError("RISK_MAX_DAILY_LOSS_PERCENT 必须在 0 到 100 之间")
-        if not 0 <= cls.RISK_MAX_DRAWDOWN_PERCENT <= 100:
-            raise ValueError("RISK_MAX_DRAWDOWN_PERCENT 必须在 0 到 100 之间")
-
         if not 0 <= cls.PAPER_TAKER_FEE_RATE < 1:
             raise ValueError("PAPER_TAKER_FEE_RATE 必须在 0（含）到 1（不含）之间")
         if cls.PAPER_DEFAULT_LEVERAGE > cls.RISK_MAX_LEVERAGE:

@@ -14,10 +14,6 @@ logger = logging.getLogger(__name__)
 class TradingService:
     """在单一后台线程中调度交易周期。"""
 
-    # 连续失败后退避等待的最大倍数，避免故障期间高频重试打爆接口与预算
-    MAX_BACKOFF_MULTIPLIER = 4
-    MAX_BACKOFF_SECONDS = 3600
-
     def __init__(self, engine: TradingEngine, app):
         self.engine = engine
         self.app = app
@@ -102,18 +98,13 @@ class TradingService:
         status.update(self.engine.get_status())
         return status
 
-    def _wait_seconds(self, interval: int, elapsed: float, failures: int) -> float:
-        """计算下一个周期前的等待时间，失败时指数退避。"""
-        if failures <= 0:
-            return max(0, interval - elapsed)
-        multiplier = 2 ** min(failures, self.MAX_BACKOFF_MULTIPLIER)
-        return min(interval * multiplier, self.MAX_BACKOFF_SECONDS)
+    def _wait_seconds(self, interval: int, elapsed: float) -> float:
+        """按固定周期计算下一次模型调用前的剩余等待时间。"""
+        return max(0, interval - elapsed)
 
     def _trading_loop(self):
         interval = self.engine.config.TRADING_INTERVAL_MINUTES * 60
-        max_failures = self.engine.config.MAX_CONSECUTIVE_CYCLE_FAILURES
         logger.info("交易循环已激活，间隔 %d 秒", interval)
-        failures = 0
         try:
             while not self._stop_event.is_set():
                 started = time.monotonic()
@@ -122,7 +113,6 @@ class TradingService:
                         result = self.engine.run_cycle()
                 except Exception as exc:
                     # 单个周期的异常不得终止循环，否则机器人会静默停摆。
-                    failures += 1
                     self._last_error = str(exc)
                     logger.exception("交易周期异常: %s", exc)
                 else:
@@ -132,20 +122,12 @@ class TradingService:
                         logger.critical("交易循环已暂停: %s", self._halt_reason)
                         break
                     if result.get("success"):
-                        failures = 0
                         self._last_error = None
                     else:
-                        failures += 1
                         self._last_error = result.get("error") or "交易周期未成功"
                         logger.error("交易周期失败: %s", self._last_error)
-                if failures >= max_failures:
-                    self._halt_reason = (
-                        f"连续 {failures} 个周期未成功，已暂停交易循环：{self._last_error}"
-                    )
-                    logger.critical("交易循环已暂停: %s", self._halt_reason)
-                    break
                 elapsed = time.monotonic() - started
-                self._stop_event.wait(self._wait_seconds(interval, elapsed, failures))
+                self._stop_event.wait(self._wait_seconds(interval, elapsed))
         finally:
             self._stop_event.set()
             logger.info("交易循环已结束")

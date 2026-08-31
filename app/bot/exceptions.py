@@ -100,14 +100,6 @@ class ReconciliationRequiredError(OpenNOF1Error):
         )
 
 
-class RiskLimitBreachedError(OpenNOF1Error):
-    """账户级风险熔断已触发，禁止继续开仓。"""
-
-    def __init__(self, reason: str):
-        self.reason = reason
-        super().__init__(f"账户级风险熔断已触发：{reason}")
-
-
 class InsufficientBalanceError(OpenNOF1Error):
     """当余额不足以进行交易时引发。"""
     
