@@ -389,28 +389,6 @@
     }
     
     /* ========== 设置面板 ========== */
-    .settings-auth-container {
-        min-height: 250px;
-        padding: 1rem;
-    }
-    
-    .auth-box {
-        padding: 1.2rem;
-        max-width: 100%;
-    }
-    
-    .auth-icon {
-        font-size: 1.8rem;
-    }
-    
-    .auth-title {
-        font-size: 0.9rem;
-    }
-    
-    .auth-desc {
-        font-size: 0.75rem;
-    }
-    
     .settings-panel {
         padding: 0.5rem;
         gap: 0.5rem;

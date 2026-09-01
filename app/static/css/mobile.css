@@ -18,8 +18,17 @@
         font-size: 1.1rem;
     }
     
-    .navbar .d-flex.align-center {
+    .navbar-status {
         font-size: 0.7rem;
+    }
+
+    .navbar-controls {
+        gap: 0.4rem;
+    }
+
+    .navbar-auth-btn {
+        padding: 0.25rem 0.45rem;
+        font-size: 0.6rem;
     }
 
     .status-dot {

@@ -21,6 +21,21 @@
     color: var(--text-primary);
 }
 
+.navbar-controls,
+.navbar-status {
+    display: flex;
+    align-items: center;
+}
+
+.navbar-controls {
+    gap: 0.75rem;
+}
+
+.navbar-auth-btn {
+    padding: 0.3rem 0.6rem;
+    white-space: nowrap;
+}
+
 .navbar-nav {
     display: none;
     /* 隐藏导航标签 */
@@ -307,19 +322,4 @@ input:checked+.toggle-slider:before {
 .toggle-switch input:disabled+.toggle-slider {
     cursor: not-allowed;
     opacity: 0.45;
-}
-
-/* 访客只读提示条 */
-.auth-banner {
-    padding: 0.5rem 1rem;
-    background: var(--red);
-    color: var(--bg-primary);
-    border: var(--border-width) solid var(--border-color);
-    border-radius: 0;
-    font-size: 0.8rem;
-    font-weight: 600;
-    text-align: center;
-}
-.auth-banner[hidden] {
-    display: none;
 }

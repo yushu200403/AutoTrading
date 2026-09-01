@@ -116,6 +116,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     await refreshControlAccess();
 
+    if (window.location.hash === '#settings') {
+        if (hasControlAccess()) {
+            activateTab('settings');
+        } else if (controlAuthenticationRequired) {
+            openLoginModal();
+        }
+    }
+
     await Promise.allSettled([
         updateStatus(),
         updateAccountSummary(),
@@ -138,7 +146,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     schedulePolling(() => Promise.allSettled([
         fetchDecisions(),
         updateEquityChart(),
-        fetchRecords()
+        fetchRecords(),
+        refreshControlAccess()
     ]), 15000);
 });
 
@@ -176,25 +185,33 @@ function updateServiceControlButtons() {
 
 function updateControlAccessState() {
     const locked = !hasControlAccess();
-    const banner = document.getElementById('auth-banner');
-    const authContainer = document.getElementById('settings-auth');
-    const contentContainer = document.getElementById('settings-content');
+    const settingsTab = document.getElementById('settings-tab-btn');
+    const settingsContent = document.getElementById('tab-settings');
+    const loginButton = document.getElementById('btn-console-login');
+    const logoutButton = document.getElementById('btn-console-logout');
     const protectedControls = [
         'btn-run-once',
         'btn-close-all',
         'live-trading',
+        'color-mode-red-up',
         'btn-save-instructions'
     ];
 
-    if (banner) {
-        banner.hidden = !(controlAuthenticationRequired && locked);
+    if (settingsTab) settingsTab.hidden = locked;
+    if (settingsContent) settingsContent.hidden = locked;
+    if (loginButton) {
+        loginButton.hidden = !(controlAuthenticationRequired && locked);
     }
-    if (authContainer) {
-        authContainer.style.display = controlAuthenticationRequired && locked
-            ? 'flex'
-            : 'none';
+    if (logoutButton) {
+        logoutButton.hidden = !(controlAuthenticationRequired && !locked);
     }
-    if (contentContainer) contentContainer.style.display = 'block';
+
+    if (locked && (
+        settingsTab?.classList.contains('active')
+        || settingsContent?.classList.contains('active')
+    )) {
+        activateTab('chat');
+    }
 
     protectedControls.forEach(id => {
         const control = document.getElementById(id);
@@ -236,59 +253,120 @@ async function refreshControlAccess() {
 async function verifySettingsPassword() {
     const input = document.getElementById('settings-password');
     const error = document.getElementById('password-error');
+    const submitButton = document.getElementById('btn-verify-password');
     const password = input?.value || '';
-    
-    const result = await fetchAPI('/verify-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
-    });
-    
-    if (result?.success) {
-        sessionStorage.setItem(CSRF_TOKEN_KEY, result.csrf_token);
-        setControlAccess(true, true);
-        fetchInstructions();
-        fetchMemory();
-    } else {
-        if (error) error.style.display = 'block';
-        if (input) input.value = '';
+
+    if (error) error.hidden = true;
+    if (submitButton) submitButton.disabled = true;
+
+    try {
+        const result = await fetchAPI('/verify-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+
+        if (result?.success) {
+            sessionStorage.setItem(CSRF_TOKEN_KEY, result.csrf_token);
+            setControlAccess(true, true);
+            closeLoginModal();
+            activateTab('settings');
+            fetchInstructions();
+            fetchMemory();
+        } else {
+            if (error) {
+                error.textContent = result?.error || '验证失败，请稍后重试';
+                error.hidden = false;
+            }
+            if (input) {
+                input.value = '';
+                input.focus();
+            }
+        }
+    } finally {
+        if (submitButton) submitButton.disabled = false;
     }
+}
+
+function activateTab(tabId) {
+    if (tabId === 'settings' && !hasControlAccess()) return false;
+
+    const button = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+    const target = document.getElementById(`tab-${tabId}`);
+    if (!button || button.hidden || !target || target.hidden) return false;
+
+    document.querySelectorAll('.tab-btn').forEach(item => {
+        item.classList.toggle('active', item === button);
+    });
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.toggle('active', content === target);
+    });
+
+    if (tabId === 'records') fetchRecords();
+
+    if (tabId === 'settings') {
+        window.history.replaceState(null, '', '#settings');
+    } else if (window.location.hash === '#settings') {
+        window.history.replaceState(
+            null,
+            '',
+            `${window.location.pathname}${window.location.search}`
+        );
+    }
+    return true;
+}
+
+function openLoginModal() {
+    if (!controlAuthenticationRequired || hasControlAccess()) return;
+    const modal = document.getElementById('login-modal');
+    const input = document.getElementById('settings-password');
+    const error = document.getElementById('password-error');
+    if (!modal) return;
+
+    if (error) error.hidden = true;
+    if (input) input.value = '';
+    modal.hidden = false;
+    window.requestAnimationFrame(() => input?.focus());
+}
+
+function closeLoginModal() {
+    const modal = document.getElementById('login-modal');
+    const input = document.getElementById('settings-password');
+    const error = document.getElementById('password-error');
+    if (modal) modal.hidden = true;
+    if (input) input.value = '';
+    if (error) error.hidden = true;
+}
+
+async function logoutControlAccess() {
+    const result = await fetchAPI('/logout', { method: 'POST' });
+    if (result?.success || result?.http_status === 401 || result?.http_status === 403) {
+        setControlAccess(false, true);
+        return;
+    }
+    showModal('退出失败', result?.error || '无法退出控制台');
 }
 
 function initTabs() {
     document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const tabId = btn.dataset.tab;
-
-            // 更新按钮
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-
-            // 更新内容
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            const target = document.getElementById(`tab-${tabId}`);
-            if (target) target.classList.add('active');
-            
-            // 切换到设置标签时更新认证状态
-            if (tabId === 'settings') {
-                updateControlAccessState();
-            }
-            // 切换到记录标签时获取最新记录
-            if (tabId === 'records') {
-                fetchRecords();
-            }
-        });
+        btn.addEventListener('click', () => activateTab(btn.dataset.tab));
     });
-    
-    // 密码验证按钮
-    document.getElementById('btn-verify-password')?.addEventListener('click', verifySettingsPassword);
-    
-    // 回车键提交
-    document.getElementById('settings-password')?.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') verifySettingsPassword();
+
+    document.getElementById('btn-console-login')?.addEventListener('click', openLoginModal);
+    document.getElementById('btn-console-logout')?.addEventListener('click', logoutControlAccess);
+    document.getElementById('login-modal-close')?.addEventListener('click', closeLoginModal);
+    document.getElementById('login-modal-cancel')?.addEventListener('click', closeLoginModal);
+    document.getElementById('console-login-form')?.addEventListener('submit', event => {
+        event.preventDefault();
+        verifySettingsPassword();
     });
-    
-    // 初始化设置标签认证状态
+    document.getElementById('login-modal')?.addEventListener('click', event => {
+        if (event.target.id === 'login-modal') closeLoginModal();
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') closeLoginModal();
+    });
+
     updateControlAccessState();
 }
 

@@ -103,8 +103,8 @@ def dashboard():
 
 @main_bp.route('/settings')
 def settings():
-    """设置页面 - 重定向到仪表板（设置已整合到右侧面板）。"""
-    return redirect('/')
+    """设置入口重定向到仪表板中的设置标签。"""
+    return redirect('/#settings')
 
 
 # =============================================================================

@@ -3,9 +3,6 @@
 {% block title %}OPENNOF1 - 全自动货币交易系统{% endblock %}
 
 {% block content %}
-<div class="auth-banner" id="auth-banner" hidden>
-    当前为访客只读模式：可查看全部数据；输入控制台密码后可使用操作与修改功能。
-</div>
 <div class="dashboard-grid">
 
     <!-- 左侧区域: 币种价格 + 图表 + 账户总览 -->
@@ -96,7 +93,7 @@
             <button class="tab-btn active" data-tab="chat">对话</button>
             <button class="tab-btn" data-tab="positions">持仓</button>
             <button class="tab-btn" data-tab="records">记录</button>
-            <button class="tab-btn" data-tab="settings">设置</button>
+            <button class="tab-btn" id="settings-tab-btn" data-tab="settings" hidden>设置</button>
         </div>
 
         <!-- 对话标签 -->
@@ -136,20 +133,7 @@
         </div>
 
         <!-- 设置标签 -->
-        <div id="tab-settings" class="tab-content">
-            <!-- 密码验证区域 (未验证时显示) -->
-            <div id="settings-auth" class="settings-auth-container">
-                <div class="auth-box">
-                    <div class="auth-icon">🔐</div>
-                    <div class="auth-title">访问控制</div>
-                    <p class="auth-desc">全部数据均可查看，输入密码后可操作和修改</p>
-                    <input type="password" id="settings-password" class="form-control" placeholder="输入密码">
-                    <div id="password-error" class="text-danger" style="display: none; margin-top: 0.5rem;">密码错误，请重试</div>
-                    <button class="btn btn-primary" id="btn-verify-password" style="width: 100%; margin-top: 1rem;">验证密码</button>
-                </div>
-            </div>
-
-            <!-- 设置内容始终可见，访客状态下写操作控件保持锁定 -->
+        <div id="tab-settings" class="tab-content" hidden>
             <div id="settings-content" class="settings-panel">
                 <!-- 系统控制 -->
                 <div class="settings-section">
@@ -186,7 +170,7 @@
                     <div class="settings-section-body">
                         <div class="status-row">
                             <label class="toggle-switch">
-                                <input type="checkbox" id="color-mode-red-up">
+                                <input type="checkbox" id="color-mode-red-up" disabled>
                                 <span class="toggle-slider"></span>
                             </label>
                             <span>红涨绿跌（A股风格）</span>
@@ -220,6 +204,27 @@
     </div>
 
 </div>
+    <!-- 控制台登录 -->
+    <div id="login-modal" class="modal-overlay" hidden>
+        <form id="console-login-form" class="modal-container" role="dialog" aria-modal="true"
+            aria-labelledby="login-modal-title">
+            <div class="modal-header">
+                <div class="modal-title" id="login-modal-title">控制台登录</div>
+                <button type="button" class="modal-close" id="login-modal-close">×</button>
+            </div>
+            <div class="modal-body login-modal-body">
+                <label class="form-label" for="settings-password">控制台密码</label>
+                <input type="password" id="settings-password" class="form-control"
+                    autocomplete="current-password" placeholder="输入密码" required>
+                <div id="password-error" class="text-danger login-error" hidden>密码错误，请重试</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="login-modal-cancel">取消</button>
+                <button type="submit" class="btn btn-primary" id="btn-verify-password">验证密码</button>
+            </div>
+        </form>
+    </div>
+
     <!-- Custom Modal -->
     <div id="custom-modal" class="modal-overlay" style="display: none;">
         <div class="modal-container">

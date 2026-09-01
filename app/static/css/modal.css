@@ -65,6 +65,15 @@
     line-height: 1.5;
 }
 
+.login-modal-body {
+    text-align: left;
+}
+
+.login-error {
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+}
+
 .modal-footer {
     display: flex;
     justify-content: flex-end;

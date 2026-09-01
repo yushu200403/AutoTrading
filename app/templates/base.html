@@ -16,9 +16,13 @@
 <body>
     <nav class="navbar">
         <span class="navbar-brand">OPENNOF1</span>
-        <div class="d-flex align-center gap-1">
-            <span id="status-dot" class="status-dot stopped"></span>
-            <span id="status-text">已停止</span>
+        <div class="navbar-controls">
+            <div class="navbar-status">
+                <span id="status-dot" class="status-dot stopped"></span>
+                <span id="status-text">已停止</span>
+            </div>
+            <button class="btn btn-sm navbar-auth-btn" id="btn-console-login">控制台登录</button>
+            <button class="btn btn-sm navbar-auth-btn" id="btn-console-logout" hidden>退出</button>
         </div>
     </nav>
 

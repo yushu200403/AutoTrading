@@ -166,6 +166,18 @@ def test_request_body_limit_is_enforced(app):
     assert oversized.status_code == 413
 
 
+def test_dashboard_guest_shell_hides_settings_and_exposes_login(app):
+    client = app.test_client()
+    html = client.get("/").get_data(as_text=True)
+
+    assert 'id="auth-banner"' not in html
+    assert "当前为访客只读模式" not in html
+    assert 'id="btn-console-login"' in html
+    assert 'id="settings-tab-btn" data-tab="settings" hidden' in html
+    assert 'id="tab-settings" class="tab-content" hidden' in html
+    assert 'id="settings-auth"' not in html
+
+
 def test_read_and_control_api_contracts(app):
     service = DetailedService()
     init_service(service)
@@ -211,7 +223,9 @@ def test_read_and_control_api_contracts(app):
 
     client = app.test_client()
     assert client.get("/").status_code == 200
-    assert client.get("/settings").status_code == 302
+    settings_redirect = client.get("/settings")
+    assert settings_redirect.status_code == 302
+    assert settings_redirect.headers["Location"].endswith("/#settings")
     # 存活探针不需要认证，也不返回业务数据
     assert client.get("/healthz").get_json() == {"status": "ok"}
     # 余额、持仓、模型推理、指令与记忆等业务数据均允许访客只读访问
@@ -246,7 +260,7 @@ def test_read_and_control_api_contracts(app):
     assert history["base_equity"] == 1000
     assert len(history["data"]) == 2
 
-    # 页面禁用控件只是交互提示，服务端仍必须拒绝所有访客写操作
+    # 页面隐藏设置只是交互边界，服务端仍必须拒绝所有访客写操作
     guest_requests = (
         ("/api/start", {}),
         ("/api/stop", {}),
