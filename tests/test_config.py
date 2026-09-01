@@ -90,6 +90,13 @@ def test_live_and_production_configuration_guards():
         ({"AI_2_API_KEY": "备用密钥"}, "必须同时配置"),
         ({"TRADING_SYMBOLS": ["BTC/USDT", "BTC/USDT"]}, "重复交易对"),
         ({"TRADING_SYMBOLS": ["BTC-USDT"]}, "无效 USDT 交易对"),
+        (
+            {
+                "CONSOLE_AUTH_ENABLED": False,
+                "CONSOLE_READONLY_AUTH_ENABLED": True,
+            },
+            "必须同时启用 CONSOLE_AUTH_ENABLED",
+        ),
     ],
 )
 def test_cross_field_configuration_guards(overrides, message):
@@ -107,6 +114,8 @@ def test_cross_field_configuration_guards(overrides, message):
         "AI_2_API_KEY": "",
         "AI_2_BASE_URL": "",
         "AI_2_MODEL": "",
+        "CONSOLE_AUTH_ENABLED": True,
+        "CONSOLE_READONLY_AUTH_ENABLED": False,
     }
     values.update(overrides)
     candidate = type("待校验配置", (Config,), values)

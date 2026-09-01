@@ -109,6 +109,8 @@ def test_control_route_requires_session_and_csrf(app):
     assert client.get("/api/auth-status").get_json() == {
         "authentication_required": True,
         "control_access": False,
+        "readonly_authentication_required": False,
+        "read_access": True,
     }
     assert client.post("/api/start").status_code == 401
     login = client.post(
@@ -166,12 +168,13 @@ def test_request_body_limit_is_enforced(app):
     assert oversized.status_code == 413
 
 
-def test_dashboard_guest_shell_hides_settings_and_exposes_login(app):
+def test_dashboard_guest_shell_contains_conditional_banner_and_login(app):
     client = app.test_client()
     html = client.get("/").get_data(as_text=True)
 
-    assert 'id="auth-banner"' not in html
-    assert "当前为访客只读模式" not in html
+    assert 'class="auth-banner" id="auth-banner" hidden' in html
+    assert "需要登录后才能查看账户与策略数据" in html
+    assert 'id="dashboard-content" hidden' in html
     assert 'id="btn-console-login"' in html
     assert 'id="settings-tab-btn" data-tab="settings" hidden' in html
     assert 'id="tab-settings" class="tab-content" hidden' in html
@@ -278,6 +281,8 @@ def test_read_and_control_api_contracts(app):
     assert client.get("/api/auth-status", headers=headers).get_json() == {
         "authentication_required": True,
         "control_access": True,
+        "readonly_authentication_required": False,
+        "read_access": True,
     }
     assert client.post("/api/start", headers=headers).status_code == 200
     assert client.post("/api/stop", headers=headers).status_code == 200
@@ -331,9 +336,50 @@ def test_explicitly_disabled_control_auth_allows_operations(app):
     assert client.get("/api/auth-status").get_json() == {
         "authentication_required": False,
         "control_access": True,
+        "readonly_authentication_required": False,
+        "read_access": True,
     }
     assert client.post("/api/start").status_code == 200
     assert service.starts == 1
+
+
+def test_readonly_auth_can_be_enabled_without_changing_default_policy(app):
+    service = DetailedService()
+    init_service(service)
+    app.config["CONSOLE_READONLY_AUTH_ENABLED"] = True
+    client = app.test_client()
+
+    assert client.get("/api/auth-status").get_json() == {
+        "authentication_required": True,
+        "control_access": False,
+        "readonly_authentication_required": True,
+        "read_access": False,
+    }
+
+    readonly_endpoints = (
+        "/api/status",
+        "/api/tickers",
+        "/api/alpha",
+        "/api/decisions",
+        "/api/records",
+        "/api/positions",
+        "/api/memory",
+        "/api/instructions",
+        "/api/account-summary",
+        "/api/equity-history",
+    )
+    for endpoint in readonly_endpoints:
+        assert client.get(endpoint).status_code == 401, endpoint
+
+    headers = _login(client)
+    auth_status = client.get("/api/auth-status", headers=headers).get_json()
+    assert auth_status["control_access"] is True
+    assert auth_status["read_access"] is True
+    for endpoint in readonly_endpoints:
+        assert client.get(endpoint).status_code == 200, endpoint
+
+    assert client.post("/api/logout", headers=headers).status_code == 200
+    assert client.get("/api/status").status_code == 401
 
 
 def test_control_conflicts_and_unknown_failures_return_json(app):

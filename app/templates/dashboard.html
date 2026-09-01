@@ -3,7 +3,10 @@
 {% block title %}OPENNOF1 - 全自动货币交易系统{% endblock %}
 
 {% block content %}
-<div class="dashboard-grid">
+<div class="auth-banner" id="auth-banner" hidden>
+    需要登录后才能查看账户与策略数据，请点击右上角“控制台登录”并输入密码。
+</div>
+<div class="dashboard-grid" id="dashboard-content" hidden>
 
     <!-- 左侧区域: 币种价格 + 图表 + 账户总览 -->
     <div class="chart-section">

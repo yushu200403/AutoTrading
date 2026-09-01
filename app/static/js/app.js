@@ -56,6 +56,8 @@ let equityChart = null;
 let miniCharts = {};
 let controlAccessGranted = false;
 let controlAuthenticationRequired = true;
+let readAccessGranted = false;
+let readonlyAuthenticationRequired = false;
 let latestServiceRunning = null;
 
 // 使用浏览器本地时区格式化时间显示
@@ -124,7 +126,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    await Promise.allSettled([
+    await refreshAllDashboardData();
+
+    schedulePolling(() => {
+        if (!hasReadAccess()) return Promise.resolve();
+        return Promise.allSettled([
+            updateStatus(),
+            updateAccountSummary(),
+            updateTickers(),
+            fetchPositions()
+        ]);
+    }, REFRESH_INTERVAL);
+
+    schedulePolling(async () => {
+        await refreshControlAccess();
+        if (!hasReadAccess()) return;
+        await Promise.allSettled([
+            fetchDecisions(),
+            updateEquityChart(),
+            fetchRecords()
+        ]);
+    }, 15000);
+});
+
+function refreshAllDashboardData() {
+    if (!hasReadAccess()) return Promise.resolve([]);
+    return Promise.allSettled([
         updateStatus(),
         updateAccountSummary(),
         updateEquityChart(),
@@ -135,21 +162,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         fetchRecords(),
         fetchInstructions()
     ]);
-
-    schedulePolling(() => Promise.allSettled([
-        updateStatus(),
-        updateAccountSummary(),
-        updateTickers(),
-        fetchPositions()
-    ]), REFRESH_INTERVAL);
-
-    schedulePolling(() => Promise.allSettled([
-        fetchDecisions(),
-        updateEquityChart(),
-        fetchRecords(),
-        refreshControlAccess()
-    ]), 15000);
-});
+}
 
 function schedulePolling(task, interval) {
     const run = async () => {
@@ -168,6 +181,26 @@ const CSRF_TOKEN_KEY = 'opennof1_csrf_token';
 
 function hasControlAccess() {
     return controlAccessGranted;
+}
+
+function hasReadAccess() {
+    return readAccessGranted;
+}
+
+function updateReadAccessState() {
+    const locked = !hasReadAccess();
+    const banner = document.getElementById('auth-banner');
+    const dashboard = document.getElementById('dashboard-content');
+    if (banner) {
+        banner.hidden = !(readonlyAuthenticationRequired && locked);
+    }
+    if (dashboard) dashboard.hidden = locked;
+}
+
+function setReadAccess(granted, authenticationRequired = readonlyAuthenticationRequired) {
+    readAccessGranted = Boolean(granted);
+    readonlyAuthenticationRequired = Boolean(authenticationRequired);
+    updateReadAccessState();
 }
 
 function updateServiceControlButtons() {
@@ -245,9 +278,14 @@ async function refreshControlAccess() {
     });
     if (!result || typeof result.control_access !== 'boolean') {
         setControlAccess(false, true);
+        setReadAccess(false, true);
         return;
     }
     setControlAccess(result.control_access, result.authentication_required);
+    setReadAccess(
+        result.read_access,
+        result.readonly_authentication_required
+    );
 }
 
 async function verifySettingsPassword() {
@@ -269,10 +307,10 @@ async function verifySettingsPassword() {
         if (result?.success) {
             sessionStorage.setItem(CSRF_TOKEN_KEY, result.csrf_token);
             setControlAccess(true, true);
+            setReadAccess(true, readonlyAuthenticationRequired);
             closeLoginModal();
             activateTab('settings');
-            fetchInstructions();
-            fetchMemory();
+            await refreshAllDashboardData();
         } else {
             if (error) {
                 error.textContent = result?.error || '验证失败，请稍后重试';
@@ -342,6 +380,10 @@ async function logoutControlAccess() {
     const result = await fetchAPI('/logout', { method: 'POST' });
     if (result?.success || result?.http_status === 401 || result?.http_status === 403) {
         setControlAccess(false, true);
+        setReadAccess(
+            !readonlyAuthenticationRequired,
+            readonlyAuthenticationRequired
+        );
         return;
     }
     showModal('退出失败', result?.error || '无法退出控制台');
@@ -368,6 +410,7 @@ function initTabs() {
     });
 
     updateControlAccessState();
+    updateReadAccessState();
 }
 
 // --- 币种 24 小时迷你走势 ---
@@ -642,6 +685,9 @@ async function fetchAPI(endpoint, options = {}) {
             if (response.status === 401 || response.status === 403) {
                 setControlAccess(false);
             }
+            if (response.status === 401 && readonlyAuthenticationRequired) {
+                setReadAccess(false, true);
+            }
             return { ...data, http_status: response.status };
         }
         return data;
@@ -669,8 +715,11 @@ async function updateStatus() {
 
     latestServiceRunning = data.running;
     if (data.running) {
+        const modeLabel = data.trading_mode === 'live'
+            ? '实盘'
+            : data.trading_mode === 'paper' ? '模拟盘' : '模式未知';
         if (dotEl) dotEl.className = 'status-dot running';
-        if (textEl) textEl.textContent = '运行中';
+        if (textEl) textEl.textContent = `运行中 · ${modeLabel}`;
     } else {
         if (dotEl) dotEl.className = 'status-dot stopped';
         if (textEl) textEl.textContent = '已停止';

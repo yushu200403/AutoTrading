@@ -130,6 +130,10 @@ class Config:
     )
     CONSOLE_PASSWORD = os.getenv("CONSOLE_PASSWORD", "")
     CONSOLE_AUTH_ENABLED = _env_bool("CONSOLE_AUTH_ENABLED", True)
+    # 默认公开只读业务数据；显式开启后，访客必须登录才能读取
+    CONSOLE_READONLY_AUTH_ENABLED = _env_bool(
+        "CONSOLE_READONLY_AUTH_ENABLED", False
+    )
     CONSOLE_SESSION_TTL_MINUTES = _env_int(
         "CONSOLE_SESSION_TTL_MINUTES", 60, 1, 1440
     )
@@ -227,6 +231,10 @@ class Config:
             raise ValueError(
                 "启用控制台认证时必须配置 CONSOLE_PASSWORD；"
                 "如确认无需认证请显式设置 CONSOLE_AUTH_ENABLED=false"
+            )
+        if cls.CONSOLE_READONLY_AUTH_ENABLED and not cls.CONSOLE_AUTH_ENABLED:
+            raise ValueError(
+                "启用访客数据认证时必须同时启用 CONSOLE_AUTH_ENABLED"
             )
 
 

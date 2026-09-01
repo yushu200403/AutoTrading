@@ -17,6 +17,7 @@ class TestConfig(Config):
     AUTO_CREATE_SCHEMA = True
     CONSOLE_PASSWORD = "test-password"
     CONSOLE_AUTH_ENABLED = True
+    CONSOLE_READONLY_AUTH_ENABLED = False
     SESSION_COOKIE_SECURE = False
     TRADING_MODE = "paper"
     LIVE_TRADING_CONFIRMATION = ""

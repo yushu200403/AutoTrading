@@ -323,3 +323,15 @@ input:checked+.toggle-slider:before {
     cursor: not-allowed;
     opacity: 0.45;
 }
+
+/* 访客读取受限提示 */
+.auth-banner {
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 1rem;
+    background: var(--red);
+    color: var(--bg-primary);
+    border: var(--border-width) solid var(--border-color);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: center;
+}
