@@ -16,7 +16,7 @@ executor → broker 协议（binance_client / paper_broker 同构实现）
 ```
 
 - `executor` 只依赖 Broker 协议，不区分模拟与实盘，两类 Broker 必须保持接口同构。
-- `risk` 负责校验模型输出的工具批次；周期级门禁（待对账检查、账户熔断）属于 `engine`。
+- `risk` 负责校验模型输出的工具批次；`engine` 协调持续决策与审计，`recovery` 逐周期推进订单对账和保护单修复。
 - `xml_parser` 是模型输出的唯一信任边界，只做白名单校验，不猜测模型意图。
 
 ## 资金安全红线
@@ -25,7 +25,7 @@ executor → broker 协议（binance_client / paper_broker 同构实现）
 
 - 任何写入交易所或模拟账本的路径。
 - `ExecutionResult.status` 的取值与语义。
-- `TradingEngine.RECONCILIATION_STATUSES`：出现其中任一状态时必须阻塞后续周期并暂停循环，不得放宽。
+- `TradingEngine.RECONCILIATION_STATUSES`：出现其中任一状态时必须自动对账并反馈模型，不得停止后续模型周期；仅隔离可能与未确认订单冲突的动作，禁止重放未知交易。
 - `risk.py` 的任何上限判断。
 
 其他约束：

@@ -155,6 +155,28 @@ def test_open_position_with_valid_protection_succeeds():
     assert len(client.market_orders) == 1
 
 
+def test_unknown_protection_keeps_identity_without_automatic_rollback():
+    client = FakeClient()
+    client.fail_stop_loss = OrderResultUnknownError("BTC/USDT", "SELL", "uncertain-sl", "超时")
+    result = _executor(client).open_position(
+        "BTC/USDT", "LONG", 100, stop_loss_price=90, client_order_id="open"
+    )
+    assert result.status == "PARTIAL"
+    assert result.recovery["uncertain"][0]["client_order_id"] == "uncertain-sl"
+    assert len(client.market_orders) == 1
+
+
+def test_unknown_replacement_is_not_reported_as_compensated():
+    client = FakeClient()
+    client.position = {"side": "LONG", "contracts": 1}
+    client.fail_stop_loss = OrderResultUnknownError("BTC/USDT", "SELL", "replacement", "超时")
+    result = _executor(client).modify_position_tpsl(
+        "BTC/USDT", 90, position_side="LONG", client_order_id="modify"
+    )
+    assert result.status == "CRITICAL"
+    assert result.recovery["uncertain"][0]["client_order_id"] == "replacement"
+
+
 def test_protection_failure_rolls_back_new_quantity():
     client = FakeClient(price=100.0)
     client.fail_stop_loss = RuntimeError("交易所拒绝止损单")

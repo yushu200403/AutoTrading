@@ -349,6 +349,7 @@ class PaperBroker:
         return {
             "id": execution.order_id,
             "clientOrderId": execution.client_order_id,
+            "positionSide": execution.position_side,
             "symbol": execution.symbol,
             "side": execution.side.lower(),
             "average": float(execution.executed_price),
@@ -358,6 +359,20 @@ class PaperBroker:
             "status": "closed",
             "paper": True,
         }
+
+    def fetch_order_by_client_id(self, symbol: str, client_order_id: str):
+        """按持久化身份核对模拟成交，不重新发送订单。"""
+        execution = PaperExecution.query.filter_by(
+            symbol=symbol, client_order_id=client_order_id
+        ).first()
+        return self._execution_result(execution) if execution else None
+
+    def fetch_conditional_by_client_id(self, symbol: str, client_order_id: str):
+        """包含已触发或已撤销的模拟保护单。"""
+        order = PaperOrder.query.filter_by(
+            symbol=symbol, client_order_id=client_order_id
+        ).first()
+        return self._paper_order_result(order) if order else None
 
     def _create_conditional_order(
         self,

@@ -98,7 +98,7 @@ def _engine(tool_calls):
     return engine
 
 
-def test_cycle_persists_intent_and_blocks_later_risk_actions(app, monkeypatch):
+def test_cycle_revalidates_later_actions_after_failure(app, monkeypatch):
     tools = [
         _tool(
             "close_position",
@@ -135,7 +135,7 @@ def test_cycle_persists_intent_and_blocks_later_risk_actions(app, monkeypatch):
             )
         if tool_call.name == "update_memory":
             return True, None
-        raise AssertionError("失败后的增险工具不应被执行")
+        return True, ExecutionResult(True, status="SUCCESS")
 
     monkeypatch.setattr(engine, "_execute_tool", execute)
 
@@ -145,14 +145,14 @@ def test_cycle_persists_intent_and_blocks_later_risk_actions(app, monkeypatch):
         cycle = db.session.get(TradingCycle, result["cycle_id"])
 
         assert result["success"] is False
-        assert result["actions"][1]["status"] == "SKIPPED"
-        assert result["actions"][1]["executed"] is False
-        assert executed == ["close_position", "update_memory"]
-        assert observed_statuses == ["PENDING", "PENDING"]
+        assert result["actions"][1]["status"] == "SUCCESS"
+        assert result["actions"][1]["executed"] is True
+        assert executed == ["close_position", "trade_in", "update_memory"]
+        assert observed_statuses == ["PENDING", "PENDING", "PENDING"]
         assert engine.ai_agent.calls == 1
         assert [item.execution_status for item in decisions] == [
             "FAILED",
-            "SKIPPED",
+            "SUCCESS",
             "SUCCESS",
         ]
         assert all(item.cycle_id == result["cycle_id"] for item in decisions)
@@ -180,8 +180,39 @@ def test_cycle_failure_is_persisted_and_lock_is_released(app, monkeypatch):
     engine._cycle_lock.release()
 
 
-def test_unresolved_intent_blocks_new_cycle(app):
-    engine = _engine([])
+def test_revalidation_failure_skips_only_the_invalid_tool(app, monkeypatch):
+    engine = _engine([
+        _tool("set_leverage", target="BTC/USDT", leverage=2),
+        _tool("trade_in", target="BTC/USDT", side="LONG", count_usdt=100),
+        _tool("update_memory", content="按实际账户重新决策"),
+    ])
+    executed = []
+    checks = []
+
+    def validate(calls, broker, context):
+        checks.append(len(calls))
+        if len(calls) == 1:
+            raise ValueError("最新账户余额不足")
+
+    def execute(call, client_id):
+        executed.append(call.name)
+        if call.name == "set_leverage":
+            return False, ExecutionResult(False, error="杠杆设置失败")
+        return True, None
+
+    engine.risk_engine = SimpleNamespace(validate_batch=validate)
+    monkeypatch.setattr(engine, "_execute_tool", execute)
+    with app.app_context():
+        result = engine.run_cycle()
+        assert result["actions"][1]["status"] == "SKIPPED"
+        assert "最新账户余额不足" in result["actions"][1]["error"]
+        assert executed == ["set_leverage", "update_memory"]
+        assert checks == [3, 1]
+        assert result["memory_updated"]
+
+
+def test_unresolved_intent_does_not_stop_model(app):
+    engine = _engine([_tool("update_memory", content="持续观察市场")])
     with app.app_context():
         db.session.add(
             TradeDecision(
@@ -197,9 +228,10 @@ def test_unresolved_intent_blocks_new_cycle(app):
         result = engine.run_cycle()
 
         assert result["success"] is False
-        assert "必须人工核对交易执行端" in result["error"]
-        assert result["halt_required"] is True
-        assert engine.ai_agent.calls == 0
+        assert result["recovery"]["pending"]
+        assert "halt_required" not in result
+        assert engine.ai_agent.calls == 1
+        assert result["memory_updated"] is True
 
 
 def test_execute_tool_dispatches_to_executor(app):

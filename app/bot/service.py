@@ -21,7 +21,8 @@ class TradingService:
         self._stop_event = Event()
         self._thread: Optional[Thread] = None
         self._last_error: Optional[str] = None
-        self._halt_reason: Optional[str] = None
+        self._time_sync_pending = False
+        self._recovery = {}
 
     @property
     def is_running(self) -> bool:
@@ -34,7 +35,8 @@ class TradingService:
 
     @property
     def halt_reason(self) -> Optional[str]:
-        return self._halt_reason
+        """兼容旧状态读取方；循环不再因业务异常自动暂停。"""
+        return None
 
     def start(self):
         with self._state_lock:
@@ -42,13 +44,17 @@ class TradingService:
                 raise RuntimeError("机器人已在运行")
         # 启动前验证交易所可达并校准时钟；该调用涉及网络 I/O，
         # 放在状态锁外，避免阻塞并发的状态查询。
-        self.engine.data_engine.binance.synchronize_time()
+        try:
+            self.engine.data_engine.binance.synchronize_time()
+            self._time_sync_pending = False
+        except Exception as exc:
+            self._time_sync_pending = True
+            logger.warning("启动校时失败，将在后台重试: %s", exc)
         with self._state_lock:
             if self._thread and self._thread.is_alive():
                 raise RuntimeError("机器人已在运行")
             self._stop_event.clear()
             self._last_error = None
-            self._halt_reason = None
             self._thread = Thread(
                 target=self._trading_loop,
                 name="trading-loop",
@@ -93,7 +99,8 @@ class TradingService:
             "live_trading": self.engine.live_trading,
             "timestamp": time.time(),
             "last_error": self._last_error,
-            "halt_reason": self._halt_reason,
+            "halt_reason": None,
+            "recovery": self._recovery,
         }
         status.update(self.engine.get_status())
         return status
@@ -110,21 +117,27 @@ class TradingService:
                 started = time.monotonic()
                 try:
                     with self.app.app_context():
+                        if self._time_sync_pending:
+                            try:
+                                self.engine.data_engine.binance.synchronize_time()
+                                self._time_sync_pending = False
+                            except Exception as exc:
+                                logger.warning("交易所校时仍不可用，稍后重试: %s", exc)
                         result = self.engine.run_cycle()
+                        if not isinstance(result, dict):
+                            raise TypeError("交易周期必须返回结构化结果")
                 except Exception as exc:
                     # 单个周期的异常不得终止循环，否则机器人会静默停摆。
                     self._last_error = str(exc)
+                    self._time_sync_pending = True
                     logger.exception("交易周期异常: %s", exc)
                 else:
-                    if result.get("halt_required"):
-                        self._halt_reason = result.get("error") or "需要人工核对"
-                        self._last_error = self._halt_reason
-                        logger.critical("交易循环已暂停: %s", self._halt_reason)
-                        break
+                    self._recovery = result.get("recovery", {})
                     if result.get("success"):
                         self._last_error = None
                     else:
                         self._last_error = result.get("error") or "交易周期未成功"
+                        self._time_sync_pending = True
                         logger.error("交易周期失败: %s", self._last_error)
                 elapsed = time.monotonic() - started
                 self._stop_event.wait(self._wait_seconds(interval, elapsed))

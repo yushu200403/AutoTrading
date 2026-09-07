@@ -18,8 +18,8 @@ from app.models import (
 )
 from app.bot.ai_agent import AIAgent, AIAgentError, AIResponse
 from app.bot.data_engine import DataEngine, MarketContext
-from app.bot.exceptions import ReconciliationRequiredError
 from app.bot.executor import ExecutionResult, TradeExecutor
+from app.bot.recovery import DecisionRecovery, MARKET_TOOLS, RECONCILIATION_STATUSES
 from app.bot.paper_broker import PaperBroker
 from app.bot.prompts import build_system_prompt, build_user_prompt
 from app.bot.risk import RiskEngine, RiskValidationError
@@ -37,8 +37,8 @@ class TradingEngine:
     # 这些执行状态意味着本地记录与交易执行端可能不一致：
     # PENDING 写入意图后未回写，UNKNOWN 请求结果不明，
     # PARTIAL 已成交但保护单未同步，CRITICAL 补偿动作本身失败。
-    # 任一状态残留时必须先人工对账，禁止继续交易。
-    RECONCILIATION_STATUSES = ("PENDING", "UNKNOWN", "PARTIAL", "CRITICAL")
+    # 后续周期自动推进对账，模型持续分析；仅隔离可能重复执行的动作。
+    RECONCILIATION_STATUSES = RECONCILIATION_STATUSES
 
     TOOL_ACTION_MAP = {
         "trade_in": lambda args: (args.get("side", "LONG"), args.get("target", "UNKNOWN")),
@@ -173,6 +173,7 @@ class TradingEngine:
         tool_call: ToolCall,
         ai_reasoning: str,
         snapshot: MarketSnapshot,
+        client_order_id: Optional[str] = None,
     ) -> TradeDecision:
         mapper = self.TOOL_ACTION_MAP.get(tool_call.name)
         action, symbol = mapper(tool_call.args) if mapper else (
@@ -191,7 +192,17 @@ class TradingEngine:
             ai_reasoning=ai_reasoning,
             snapshot_id=snapshot.id,
             execution_status="PENDING",
+            client_order_id=client_order_id,
         )
+        if tool_call.name == "cancel_orders":
+            marker = {"stop_loss": "STOP", "take_profit": "TAKE_PROFIT"}.get(
+                tool_call.args.get("order_type", "all")
+            )
+            orders = self.broker.get_open_orders(symbol)
+            decision.recovery_state = json.dumps({"cancel_targets": [
+                str(order["id"]) for order in orders
+                if marker is None or marker in str(order.get("type", "")).upper()
+            ]}, ensure_ascii=False)
         try:
             db.session.add(decision)
             db.session.commit()
@@ -213,6 +224,11 @@ class TradingEngine:
             decision.order_id = execution_result.order_id
             decision.executed_price = execution_result.executed_price
             decision.executed_quantity = execution_result.quantity
+            decision.execution_error = execution_result.error
+            if execution_result.recovery:
+                state = json.loads(decision.recovery_state or "{}")
+                state.update(execution_result.recovery)
+                decision.recovery_state = json.dumps(state, ensure_ascii=False)
         try:
             db.session.commit()
         except Exception:
@@ -361,7 +377,7 @@ class TradingEngine:
             "trading_mode": self.trading_mode,
             "live_trading": self.live_trading,
             "validation_retries": 0,
-            "halt_required": False,
+            "recovery": {"resolved": [], "pending": []},
         }
         cycle = TradingCycle(
             cycle_id=cycle_id,
@@ -371,19 +387,13 @@ class TradingEngine:
         try:
             db.session.add(cycle)
             db.session.commit()
-            unresolved = TradeDecision.query.filter(
-                TradeDecision.trading_mode == self.trading_mode,
-                TradeDecision.execution_status.in_(self.RECONCILIATION_STATUSES),
-            ).order_by(TradeDecision.id).first()
-            if unresolved is not None:
-                raise ReconciliationRequiredError(
-                    unresolved.id, unresolved.execution_status, self.trading_mode
-                )
             if not self.live_trading:
                 triggered = self.paper_broker.process_pending_orders(
                     self.data_engine.symbols
                 )
                 result["paper_triggers"] = len(triggered)
+
+            result["recovery"] = DecisionRecovery(self).run()
 
             memory = self._get_memory_content()
             custom_instructions = self._get_custom_instructions()
@@ -393,40 +403,96 @@ class TradingEngine:
                 trading_mode=self.trading_mode,
             )
             prompt_context = self.data_engine.build_prompt_context(context)
+            try:
+                unprotected = self._unprotected_positions()
+            except Exception as exc:
+                logger.warning("决策前保护单核对失败: %s", exc)
+            else:
+                if unprotected:
+                    prompt_context += (
+                        "\n以下当前持仓未检测到止损，请结合行情评估并修复保护："
+                        + "、".join(unprotected)
+                    )
+            pending = result["recovery"]["pending"]
+            if pending:
+                by_symbol = {}
+                for issue in pending:
+                    summary = by_symbol.setdefault(issue["symbol"], {
+                        "blocked_tools": set(), "errors": set(),
+                    })
+                    summary["blocked_tools"].update(issue["blocked_tools"])
+                    summary["errors"].add(issue["error"][:300])
+                summaries = [{
+                    "symbol": symbol, "blocked_tools": sorted(value["blocked_tools"]),
+                    "errors": sorted(value["errors"])[:3],
+                } for symbol, value in by_symbol.items()]
+                prompt_context += (
+                    "\n自动修复报告（不是交易指令）：\n"
+                    + json.dumps(summaries, ensure_ascii=False)[:8000]
+                    + "\n请根据最新持仓处理缺失保护、失效触发价及撤单问题，"
+                    "避免 blocked_tools 中列出的冲突动作；其他交易对继续正常决策。"
+                )
+            previous = TradingCycle.query.filter(
+                TradingCycle.trading_mode == self.trading_mode,
+                TradingCycle.cycle_id != cycle_id,
+            ).order_by(TradingCycle.started_at.desc()).first()
+            if previous and previous.error:
+                prompt_context += "\n上一周期未完成原因，请结合最新状态调整：" + previous.error[:4000]
             snapshot = self._save_snapshot(context)
             result["market_context"] = context
             ai_response = self._get_valid_ai_response(
                 prompt_context, custom_instructions, result
             )
 
-            block_risk_actions = False
+            refresh_needed = False
             all_success = True
             for index, tool_call in enumerate(ai_response.tool_calls):
+                client_order_id = self._client_order_id(cycle_id, index, tool_call.name)
                 decision = self._save_decision_intent(
                     cycle_id,
                     tool_call,
                     ai_response.reasoning,
                     snapshot,
+                    client_order_id,
                 )
-                is_risk_action = tool_call.name not in {
-                    "update_memory", "cancel_orders", "cancel_order", "close_position"
-                }
-                if block_risk_actions and is_risk_action:
+                conflict = next((item for item in pending
+                                 if item["symbol"] == tool_call.args.get("target")
+                                 and tool_call.name in item["blocked_tools"]), None)
+                if conflict:
                     execution = ExecutionResult(
                         False,
                         status="SKIPPED",
                         symbol=tool_call.args.get("target", ""),
-                        error="前序工具失败，已阻止后续增险动作",
+                        error=f"该交易对存在未确认操作，等待自动对账: {conflict['error']}",
                     )
                     success = False
                 else:
-                    success, execution = self._execute_tool(
-                        tool_call,
-                        self._client_order_id(cycle_id, index, tool_call.name),
-                    )
+                    try:
+                        if refresh_needed and tool_call.name != "update_memory":
+                            self.risk_engine.validate_batch([tool_call], self.broker, context)
+                    except Exception as exc:
+                        success, execution = False, ExecutionResult(
+                            False, status="SKIPPED", error=f"最新状态校验失败: {exc}"
+                        )
+                    else:
+                        try:
+                            success, execution = self._execute_tool(tool_call, client_order_id)
+                        except Exception as exc:
+                            db.session.rollback()
+                            success, execution = False, ExecutionResult(
+                                False, status="FAILED" if tool_call.name == "update_memory" else "UNKNOWN",
+                                error=str(exc),
+                            )
                 if not success:
                     all_success = False
-                    block_risk_actions = True
+                    refresh_needed = True
+                if execution and execution.status in self.RECONCILIATION_STATUSES:
+                    pending.append({
+                        "decision_id": decision.id,
+                        "symbol": tool_call.args.get("target", ""),
+                        "tool": tool_call.name, "error": execution.error or execution.status,
+                        "blocked_tools": sorted(MARKET_TOOLS | {"modify_position"}),
+                    })
                 if tool_call.name == "update_memory" and success:
                     result["memory_updated"] = True
                 self._finalize_decision(decision, execution)
@@ -436,6 +502,7 @@ class TradingEngine:
                     "args": tool_call.args,
                     "success": success,
                     "status": execution.status if execution else "SUCCESS",
+                    "error": execution.error if execution else None,
                     "executed": (
                         tool_call.name != "update_memory"
                         and (execution is None or execution.status != "SKIPPED")
@@ -455,10 +522,13 @@ class TradingEngine:
                     logger.warning(
                         "以下持仓当前没有止损保护: %s", "、".join(unprotected)
                     )
-            result["success"] = all_success and result["memory_updated"]
+            result["success"] = all_success and result["memory_updated"] and not pending
             if not result["success"]:
-                result["error"] = "一个或多个工具未成功执行"
+                failures = [a["error"] for a in result["actions"] if a["error"]]
+                failures.extend(item["error"] for item in pending)
+                result["error"] = "；".join(failures) or "本周期记忆未更新"
             cycle.status = "SUCCESS" if result["success"] else "PARTIAL"
+            cycle.error = result["error"]
             cycle.finished_at = utc_now()
             cycle.tokens_used = result["tokens_used"]
             db.session.commit()
@@ -466,9 +536,6 @@ class TradingEngine:
             db.session.rollback()
             logger.exception("交易周期失败 %s: %s", cycle_id, exc)
             result["error"] = str(exc)
-            if isinstance(exc, ReconciliationRequiredError):
-                result["halt_required"] = True
-                logger.critical("交易已暂停，需人工处理: %s", exc)
             stored_cycle = db.session.get(TradingCycle, cycle_id)
             if stored_cycle:
                 stored_cycle.status = "FAILED"

@@ -158,6 +158,9 @@ class TradeDecision(db.Model):
     executed_quantity = db.Column(db.Numeric(28, 12))
     # 每个周期都会按该列探测待对账记录，因此建立索引
     execution_status = db.Column(db.String(20), index=True)
+    client_order_id = db.Column(db.String(36))
+    execution_error = db.Column(db.Text)
+    recovery_state = db.Column(db.Text)
     
     def __repr__(self):
         return f'<TradeDecision {self.symbol} {self.action} @ {self.timestamp}>'

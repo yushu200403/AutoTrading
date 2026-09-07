@@ -87,19 +87,6 @@ class OrderResultUnknownError(OrderExecutionError):
         )
 
 
-class ReconciliationRequiredError(OpenNOF1Error):
-    """存在待对账的交易意图，必须人工核对交易执行端后才能继续交易。"""
-
-    def __init__(self, decision_id: int, status: str, trading_mode: str):
-        self.decision_id = decision_id
-        self.status = status
-        self.trading_mode = trading_mode
-        super().__init__(
-            f"{trading_mode} 模式存在待对账交易意图 {decision_id}（状态 {status}），"
-            "必须人工核对交易执行端后才能继续交易"
-        )
-
-
 class InsufficientBalanceError(OpenNOF1Error):
     """当余额不足以进行交易时引发。"""
     

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import sqlalchemy as sa
-from flask_migrate import upgrade
+from flask_migrate import downgrade, upgrade
 
 from app import create_app, db
 from tests.conftest import TestConfig
@@ -53,7 +53,25 @@ def test_empty_database_upgrades_to_head(tmp_path):
     # token 审计与待对账探测所需的结构
     assert "tokens_used" in cycle_columns
     assert "ix_trade_decision_execution_status" in decision_indexes
-    assert revision == "20260814_03"
+    assert revision == "20260907_04"
+
+
+def test_recovery_migration_can_be_reversed_without_losing_decisions(tmp_path):
+    application = _migration_app(tmp_path / "recovery.db")
+    with application.app_context():
+        upgrade(revision="20260814_03", directory=str(MIGRATIONS_DIRECTORY))
+        db.session.execute(sa.text(
+            "INSERT INTO trade_decision (symbol, action, execution_status, trading_mode) "
+            "VALUES ('BTC/USDT', 'LONG', 'UNKNOWN', 'live')"
+        ))
+        db.session.commit()
+        upgrade(directory=str(MIGRATIONS_DIRECTORY))
+        columns = {c["name"] for c in sa.inspect(db.engine).get_columns("trade_decision")}
+        assert {"client_order_id", "execution_error", "recovery_state"} <= columns
+        downgrade(revision="20260814_03", directory=str(MIGRATIONS_DIRECTORY))
+        columns = {c["name"] for c in sa.inspect(db.engine).get_columns("trade_decision")}
+        assert "recovery_state" not in columns
+        assert db.session.execute(sa.text("SELECT execution_status FROM trade_decision")).scalar_one() == "UNKNOWN"
 
 
 def test_legacy_records_are_backfilled_as_live(tmp_path):

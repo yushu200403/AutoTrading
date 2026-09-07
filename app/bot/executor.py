@@ -37,6 +37,7 @@ class ExecutionResult:
     error: Optional[str] = None
     sl_order_id: Optional[str] = None
     tp_order_id: Optional[str] = None
+    recovery: Optional[dict] = None
 
 
 def _child_order_id(base: Optional[str], suffix: str) -> str:
@@ -170,6 +171,16 @@ class TradeExecutor:
                     tp_order_id = tp_order.get("id")
                     created_protection_ids.append(tp_order_id)
             except Exception as protection_error:
+                if isinstance(protection_error, OrderResultUnknownError):
+                    return ExecutionResult(
+                        False, status="PARTIAL", order_id=order.get("id"),
+                        symbol=symbol, side=position_side, quantity=quantity,
+                        executed_price=executed_price, error=str(protection_error),
+                        recovery={"uncertain": [{
+                            "client_order_id": protection_error.client_order_id,
+                            "conditional": True,
+                        }]},
+                    )
                 cleanup_errors = self._cancel_created_orders(
                     symbol,
                     [{"id": order_id} for order_id in created_protection_ids],
@@ -200,6 +211,10 @@ class TradeExecutor:
                     error=message,
                     sl_order_id=sl_order_id,
                     tp_order_id=tp_order_id,
+                    recovery={"uncertain": [{
+                        "client_order_id": rollback_error.client_order_id,
+                        "conditional": False,
+                    }]} if isinstance(rollback_error, OrderResultUnknownError) else None,
                 )
 
             return ExecutionResult(
@@ -239,7 +254,7 @@ class TradeExecutor:
         close_side: str,
         quantity: float,
         parent_client_order_id: Optional[str],
-    ) -> Optional[str]:
+    ) -> Optional[Exception]:
         try:
             self.client.create_market_order(
                 symbol,
@@ -251,7 +266,7 @@ class TradeExecutor:
             return None
         except Exception as exc:
             logger.critical("新增仓位回补失败 %s %s: %s", symbol, position_side, exc)
-            return str(exc)
+            return exc
 
     def close_position(
         self,
@@ -318,6 +333,7 @@ class TradeExecutor:
                                 "部分平仓已成交，但保护单数量同步失败: "
                                 f"{resize_result.error}"
                             ),
+                            recovery=resize_result.recovery,
                         )
             except Exception as cleanup_error:
                 return ExecutionResult(
@@ -456,6 +472,15 @@ class TradeExecutor:
                     )
                     created.append(order)
             except Exception as create_error:
+                if isinstance(create_error, OrderResultUnknownError):
+                    return ExecutionResult(
+                        False, status="CRITICAL", symbol=symbol,
+                        side=resolved_side, error=str(create_error),
+                        recovery={"uncertain": [{
+                            "client_order_id": create_error.client_order_id,
+                            "conditional": True,
+                        }]},
+                    )
                 cleanup_errors = self._cancel_created_orders(symbol, created)
                 status = "COMPENSATED" if not cleanup_errors else "CRITICAL"
                 detail = f"新保护单创建失败: {create_error}"
@@ -579,7 +604,7 @@ class TradeExecutor:
                 quantity=float(len(cancelled)),
             )
         except OrderResultUnknownError as exc:
-            logger.critical("撤单结果未知，需人工核对: %s", exc)
+            logger.error("撤单结果未知，将在后续周期核对: %s", exc)
             return ExecutionResult(
                 False, status="UNKNOWN", symbol=symbol, error=str(exc)
             )
@@ -603,7 +628,7 @@ class TradeExecutor:
                 order_id=order_id,
             )
         except OrderResultUnknownError as exc:
-            logger.critical("撤单结果未知，需人工核对: %s", exc)
+            logger.error("撤单结果未知，将在后续周期核对: %s", exc)
             return ExecutionResult(
                 False, status="UNKNOWN", symbol=symbol, error=str(exc)
             )

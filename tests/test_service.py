@@ -109,22 +109,56 @@ def test_trading_loop_records_failed_result(app):
     assert service._last_error == "模型不可用"
     assert service._stop_event.is_set()
 
-def test_loop_halts_immediately_when_reconciliation_required(app):
+def test_loop_continues_when_reconciliation_required(app):
     engine = FakeEngine()
     engine.run_results = [{
         "success": False,
         "halt_required": True,
         "error": "存在待对账交易意图 7",
-    }]
+    }, {"success": True}]
     service = TradingService(engine, app)
+    service._wait_seconds = lambda interval, elapsed: 0
+
+    def stop_after_recovery():
+        result = FakeEngine.run_cycle(engine)
+        if not engine.run_results:
+            service._stop_event.set()
+        return result
+
+    engine.run_cycle = stop_after_recovery
 
     service._trading_loop()
 
-    # 需人工核对时必须立即停摆，不得继续下一周期
-    assert "待对账" in service.halt_reason
-    assert service._last_error == service.halt_reason
+    assert service.halt_reason is None
+    assert service._last_error is None
     assert engine.run_results == []
     assert service._stop_event.is_set()
+
+
+def test_start_retries_failed_clock_sync_in_background(app, monkeypatch):
+    engine = FakeEngine()
+    attempts = []
+
+    def synchronize():
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise RuntimeError("临时网络故障")
+
+    engine.data_engine.binance.synchronize_time = synchronize
+    monkeypatch.setattr(service_module, "Thread", FakeThread)
+    service = TradingService(engine, app)
+    service.start()
+    assert service.is_running
+    assert service._time_sync_pending
+
+    def run_and_stop():
+        service._stop_event.set()
+        return {"success": True}
+
+    engine.run_cycle = run_and_stop
+    service._trading_loop()
+    assert len(attempts) == 2
+    assert not service._time_sync_pending
 
 
 def test_loop_survives_transient_failure_and_recovers(app):
@@ -132,6 +166,7 @@ def test_loop_survives_transient_failure_and_recovers(app):
     engine = FakeEngine()
     engine.run_results = [
         RuntimeError("行情接口抖动"),
+        None,
         {"success": False, "error": "模型暂时不可用"},
         {"success": True},
     ]
@@ -148,7 +183,7 @@ def test_loop_survives_transient_failure_and_recovers(app):
     engine.run_cycle = stop_after_success
     service._trading_loop()
 
-    # 前两轮失败未停止循环，第三轮成功后错误被清空
+    # 异常、错误返回值和失败结果均未停止循环，成功后清空错误。
     assert service._last_error is None
     assert service.halt_reason is None
     assert engine.run_results == []
